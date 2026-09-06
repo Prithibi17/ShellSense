@@ -12,7 +12,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let config = Config::load_or_default();
     let socket_path = Config::socket_path();
 
-    println!("Starting shellsensd v0.1.0...");
+    println!("Starting shellsensd v{}...", env!("CARGO_PKG_VERSION"));
     println!("Socket: {}", socket_path.display());
     println!("AI Provider: {} ({})", config.ai.provider, config.ai.endpoint);
 
