@@ -3,8 +3,12 @@ name = "shellsense"
 version = "0.1.0"
 edition = "2021"
 authors = ["Prithibi <prithibi@cachyos>"]
-description = "IntelliSense-like terminal command assistant and autocomplete for Linux"
+description = "IntelliSense-like terminal command assistant and autocomplete layer for Linux"
 license = "MIT"
+readme = "README.md"
+repository = "https://github.com/prithibi/shellsense"
+keywords = ["terminal", "autocomplete", "cli", "linux", "intellisense"]
+categories = ["command-line-utilities", "development-tools"]
 
 [dependencies]
 tokio = { version = "1.43", features = ["full"] }

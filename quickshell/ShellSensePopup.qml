@@ -132,7 +132,7 @@ FloatingWindow {
                 Item { Layout.fillWidth: true }
 
                 Text {
-                    text: "terminal-assistant"
+                    text: "ShellSense"
                     font.family: "JetBrains Mono, monospace"
                     font.pixelSize: 9
                     color: "#4B5563"

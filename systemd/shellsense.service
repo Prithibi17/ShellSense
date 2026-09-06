@@ -1,11 +1,11 @@
 [Unit]
-Description=Terminal Assistant AI Autocomplete Daemon
+Description=ShellSense Intelligent Command Autocomplete Daemon
 After=default.target
 
 [Service]
 Type=simple
-ExecStart=/usr/bin/terminal-assistantd
-Restart=on-failure
+ExecStart=%h/.local/bin/shellsensd
+Restart=always
 RestartSec=2
 Environment=RUST_LOG=info
 
