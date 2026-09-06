@@ -1,0 +1,55 @@
+# Terminal Assistant Configuration
+# Location: ~/.config/terminal-assistant/config.toml
+
+[general]
+# Preferred shell environment
+shell = "fish"
+
+# Enable or disable AI intent engine
+ai_enabled = true
+
+# Maximum number of suggestion candidates to return (1-5)
+max_suggestions = 3
+
+# Debounce time in milliseconds before querying AI on typing pause
+debounce_ms = 300
+
+# Try fast local deterministic rules before querying AI LLM
+deterministic_first = true
+
+[ai]
+# AI provider backend ("ollama")
+provider = "ollama"
+
+# Specific model name or "auto" to detect installed coder models
+model = "auto"
+
+# Ollama REST API endpoint
+endpoint = "http://127.0.0.1:11434"
+
+# Timeout for AI requests in milliseconds
+timeout_ms = 2500
+
+[ui]
+# Enable inline ghost text suggestions in fish shell
+ghost_text = true
+
+# Enable Wayland floating popup (Quickshell / Caelestia)
+popup = false
+
+[keybindings]
+# Key to accept the current suggestion: "right", "tab", etc.
+accept = "right"
+
+# Key to trigger suggestion manually: "ctrl-space" (\c@)
+show = "ctrl-space"
+
+# Key to dismiss current suggestion
+dismiss = "escape"
+
+[safety]
+# Show prominent warnings for destructive commands (rm -rf, dd, mkfs, etc.)
+warn_destructive = true
+
+# Strictly prohibit automatic execution - user must press Enter manually
+never_auto_execute = true

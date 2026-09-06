@@ -1,0 +1,13 @@
+[Unit]
+Description=Terminal Assistant AI Autocomplete Daemon
+After=default.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/terminal-assistantd
+Restart=on-failure
+RestartSec=2
+Environment=RUST_LOG=info
+
+[Install]
+WantedBy=default.target
