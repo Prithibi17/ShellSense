@@ -6,7 +6,7 @@ authors = ["Prithibi <prithibi@cachyos>"]
 description = "IntelliSense-like terminal command assistant and autocomplete layer for Linux"
 license = "MIT"
 readme = "README.md"
-repository = "https://github.com/prithibi/shellsense"
+repository = "https://github.com/Prithibi17/ShellSense"
 keywords = ["terminal", "autocomplete", "cli", "linux", "intellisense"]
 categories = ["command-line-utilities", "development-tools"]
 

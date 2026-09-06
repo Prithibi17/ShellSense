@@ -29,7 +29,7 @@ ShellSense is engineered to be an ultra-fast, sub-millisecond, offline-first Lin
 
 ### Clone and Build
 ```bash
-git clone https://github.com/prithibi/shellsense.git
+git clone https://github.com/Prithibi17/ShellSense.git
 cd shellsense
 cargo build
 ```

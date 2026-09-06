@@ -6,9 +6,9 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Rust](https://img.shields.io/badge/Rust-1.80%2B-orange.svg)](https://www.rust-lang.org)
-[![Platform](https://img.shields.io/badge/Platform-Linux%20(Any%20Distro)-green.svg)](https://github.com/prithibi/shellsense)
-[![Shells](https://img.shields.io/badge/Shells-Fish%20%7C%20Bash%20%7C%20Zsh-purple.svg)](https://github.com/prithibi/shellsense)
-[![Latency](https://img.shields.io/badge/Latency-%3C%201ms%20(Native)-brightgreen.svg)](https://github.com/prithibi/shellsense)
+[![Platform](https://img.shields.io/badge/Platform-Linux%20(Any%20Distro)-green.svg)](https://github.com/Prithibi17/ShellSense)
+[![Shells](https://img.shields.io/badge/Shells-Fish%20%7C%20Bash%20%7C%20Zsh-purple.svg)](https://github.com/Prithibi17/ShellSense)
+[![Latency](https://img.shields.io/badge/Latency-%3C%201ms%20(Native)-brightgreen.svg)](https://github.com/Prithibi17/ShellSense)
 
 <p align="center">
   Transform natural intent into verified commands directly in your prompt.<br>
@@ -70,7 +70,7 @@ prithibi@cachyos ~> systemctl --user restart pipewire wireplumber
 Works on any Linux distribution (Fish, Bash, Zsh):
 
 ```bash
-git clone https://github.com/prithibi/shellsense.git
+git clone https://github.com/Prithibi17/ShellSense.git
 cd shellsense
 ./install.sh
 ```
@@ -86,7 +86,7 @@ The installer will:
 ### Arch Linux / CachyOS (PKGBUILD)
 
 ```bash
-git clone https://github.com/prithibi/shellsense.git
+git clone https://github.com/Prithibi17/ShellSense.git
 cd shellsense
 makepkg -si
 ```
