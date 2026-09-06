@@ -74,7 +74,7 @@ function __shellsense_detect
     set -l bin (__shellsense_bin)
     or return
 
-    set -l raw_line ($bin suggest --cwd "$PWD" --shell fish --raw-all "$trimmed" 2>/dev/null | head -n 1)
+    set -l raw_line ($bin suggest --cwd "$PWD" --shell fish --raw-all --ghost "$trimmed" 2>/dev/null | head -n 1)
     if test -n "$raw_line"
         set -l parts (string split \t -- "$raw_line")
         set -l sug ""
@@ -95,7 +95,7 @@ function __shellsense_detect
 
             # Subtle dim gray ghost text preview right after cursor
             if test "$is_dest" = "1"
-                printf "\0337\033[38;5;203m  ⚠ → %s\033[0m\033[K\0338" "$sug"
+                printf "\0337\033[38;5;214m  ⚠ → %s\033[0m\033[K\0338" "$sug"
             else
                 printf "\0337\033[38;5;244m  → %s\033[0m\033[K\0338" "$sug"
             end

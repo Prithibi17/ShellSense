@@ -63,7 +63,7 @@ __shellsense_detect() {
     [[ -n "$bin" ]] || return
 
     local raw_line
-    raw_line="$("$bin" suggest --cwd "$PWD" --shell zsh --raw-all "$trimmed" 2>/dev/null | head -n 1)"
+    raw_line="$("$bin" suggest --cwd "$PWD" --shell zsh --raw-all --ghost "$trimmed" 2>/dev/null | head -n 1)"
     if [[ -n "$raw_line" ]]; then
         local parts=("${(@s:\t:)raw_line}")
         local sug=""
@@ -82,7 +82,7 @@ __shellsense_detect() {
             __shellsense_hint="$sug"
             __shellsense_is_dest=$is_dest
             if [[ $is_dest -eq 1 ]]; then
-                POSTDISPLAY=$'  \e[38;5;203m⚠ → '"$sug"$'\e[0m'
+                POSTDISPLAY=$'  \e[38;5;214m⚠ → '"$sug"$'\e[0m'
             else
                 POSTDISPLAY=$'  \e[38;5;244m→ '"$sug"$'\e[0m'
             fi

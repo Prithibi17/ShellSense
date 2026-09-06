@@ -475,22 +475,25 @@ fn match_semantic_intent(
 
     // Arbitrary package install
     if let Some(pkg) = parse_install_intent(tokens) {
-        let (cmd, desc, cat) = resolve_package_command(&pkg, ctx);
-        sugs.push(sug(&cmd, &desc, 0.98, RiskLevel::Low, None, &cat));
-        return Some(sugs);
+        if let Some((cmd, desc, cat)) = resolve_package_command(&pkg, ctx) {
+            sugs.push(sug(&cmd, &desc, 0.98, RiskLevel::Low, None, &cat));
+            return Some(sugs);
+        }
     }
 
     // Arbitrary package remove
     if let Some(pkg) = parse_remove_intent(tokens) {
-        sugs.push(sug(
-            &pm.remove_cmd(&pkg),
-            &format!("Remove package '{}' using {}", pkg, pm.name()),
-            0.98,
-            RiskLevel::Destructive,
-            Some("⚠ Removes package and related dependencies. Review list before confirming.".to_string()),
-            "Packages",
-        ));
-        return Some(sugs);
+        if let Some((cmd, desc, cat)) = resolve_package_remove(&pkg, ctx) {
+            sugs.push(sug(
+                &cmd,
+                &desc,
+                0.98,
+                RiskLevel::Destructive,
+                Some("⚠ Removes package and related dependencies. Review list before confirming.".to_string()),
+                &cat,
+            ));
+            return Some(sugs);
+        }
     }
 
     // Arbitrary package search
@@ -1010,29 +1013,33 @@ fn match_package_management(lower: &str, ctx: &SystemContext) -> Option<Vec<Cand
 
     // Install intent
     if let Some(pkg) = parse_install_intent_str(lower) {
-        let (cmd, desc, cat) = resolve_package_command(&pkg, ctx);
-        sugs.push(sug(&cmd, &desc, 0.98, RiskLevel::Low, None, &cat));
-        return Some(sugs);
+        if let Some((cmd, desc, cat)) = resolve_package_command(&pkg, ctx) {
+            sugs.push(sug(&cmd, &desc, 0.98, RiskLevel::Low, None, &cat));
+            return Some(sugs);
+        }
     }
 
     // Search intent
     if let Some(pkg) = parse_find_package_intent_str(lower) {
-        sugs.push(sug(&pm.search_cmd(&pkg), &format!("Search {} repositories for '{}'", pm.name(), pkg), 0.98, RiskLevel::Low, None, "Packages"));
-        return Some(sugs);
+        if is_valid_package_target(&pkg) {
+            sugs.push(sug(&pm.search_cmd(&pkg), &format!("Search {} repositories for '{}'", pm.name(), pkg), 0.98, RiskLevel::Low, None, "Packages"));
+            return Some(sugs);
+        }
     }
 
     // Uninstall intent
-    if let Some(caps) = Regex::new(r#"^(?:uninstall|remove|delete)\s+(?:package\s+)?([a-zA-Z0-9_\-\.\+]+)$"#).ok()?.captures(lower) {
-        let pkg = &caps[1];
-        sugs.push(sug(
-            &pm.remove_cmd(pkg),
-            &format!("Remove package '{}' using {}", pkg, pm.name()),
-            0.98,
-            RiskLevel::Destructive,
-            Some("⚠ Removes package and related dependencies. Review list before confirming.".to_string()),
-            "Packages",
-        ));
-        return Some(sugs);
+    if let Some(pkg) = parse_remove_intent_str(lower) {
+        if let Some((cmd, desc, cat)) = resolve_package_remove(&pkg, ctx) {
+            sugs.push(sug(
+                &cmd,
+                &desc,
+                0.98,
+                RiskLevel::Destructive,
+                Some("⚠ Removes package and related dependencies. Review list before confirming.".to_string()),
+                &cat,
+            ));
+            return Some(sugs);
+        }
     }
 
     None
@@ -1525,14 +1532,18 @@ fn match_processes_and_performance(lower: &str) -> Option<Vec<CandidateSuggestio
     // Kill process
     if let Some(caps) = Regex::new(r#"^(?:kill process|stop process|kill)\s+([a-zA-Z0-9_\-\.]+)$"#).ok()?.captures(lower) {
         let proc = &caps[1];
-        sugs.push(sug(&format!("pkill -f \"{}\"", proc), &format!("Terminate all active processes matching '{}'", proc), 0.97, RiskLevel::Medium, Some("Terminates matching process".to_string()), "Processes"));
-        return Some(sugs);
+        if proc.len() >= 3 || ["dd", "cp", "mv", "ps", "sh"].contains(&proc) {
+            sugs.push(sug(&format!("pkill -f \"{}\"", proc), &format!("Terminate all active processes matching '{}'", proc), 0.97, RiskLevel::Medium, Some("Terminates matching process".to_string()), "Processes"));
+            return Some(sugs);
+        }
     }
 
     if let Some(caps) = Regex::new(r#"^(?:find process|check process|pgrep)\s+([a-zA-Z0-9_\-\.]+)$"#).ok()?.captures(lower) {
         let proc = &caps[1];
-        sugs.push(sug(&format!("pgrep -fl \"{}\"", proc), &format!("List process IDs and command lines matching '{}'", proc), 0.98, RiskLevel::Low, None, "Processes"));
-        return Some(sugs);
+        if proc.len() >= 3 || ["dd", "cp", "mv", "ps", "sh"].contains(&proc) {
+            sugs.push(sug(&format!("pgrep -fl \"{}\"", proc), &format!("List process IDs and command lines matching '{}'", proc), 0.98, RiskLevel::Low, None, "Processes"));
+            return Some(sugs);
+        }
     }
 
     None
@@ -1724,6 +1735,34 @@ fn match_btrfs_and_cachyos(lower: &str) -> Option<Vec<CandidateSuggestion>> {
 // -----------------------------------------------------------------------------
 // Helper parsers & universal lookups
 // -----------------------------------------------------------------------------
+const KNOWN_SHORT_PACKAGES: &[&str] = &[
+    "go", "r", "jq", "gh", "fd", "rg", "du", "ip", "bt", "pv", "bc", "nc", "xz", "7z", "cp", "mv", "dd", "vi", "ps", "sh",
+];
+
+pub fn is_valid_package_target(pkg: &str) -> bool {
+    let trimmed = pkg.trim().to_lowercase();
+    if trimmed.is_empty() {
+        return false;
+    }
+    // Filter out common stopwords, noise words, and articles
+    if [
+        "it", "this", "that", "them", "all", "app", "application", "tool",
+        "pkg", "package", "packages", "repo", "for", "via", "aur",
+    ].contains(&trimmed.as_str()) {
+        return false;
+    }
+    // Allow known valid 1-2 letter Linux packages
+    if KNOWN_SHORT_PACKAGES.contains(&trimmed.as_str()) {
+        return true;
+    }
+    // Any package name not in the short list MUST have at least 3 characters
+    if trimmed.len() < 3 {
+        return false;
+    }
+    // Must be valid package identifier characters (spaces allowed for multi-word names like "google chrome")
+    trimmed.chars().all(|c| c.is_alphanumeric() || c == '-' || c == '_' || c == '.' || c == '+' || c == ' ')
+}
+
 fn parse_install_intent(tokens: &[String]) -> Option<String> {
     if tokens.is_empty() {
         return None;
@@ -1745,7 +1784,12 @@ fn parse_install_intent(tokens: &[String]) -> Option<String> {
         return None;
     }
 
-    Some(pkg_tokens.join(" "))
+    let joined = pkg_tokens.join(" ");
+    if !is_valid_package_target(&joined) {
+        return None;
+    }
+
+    Some(joined)
 }
 
 fn parse_install_intent_str(lower: &str) -> Option<String> {
@@ -1774,7 +1818,12 @@ fn parse_remove_intent(tokens: &[String]) -> Option<String> {
         return None;
     }
 
-    Some(pkg_tokens.join(" "))
+    let joined = pkg_tokens.join(" ");
+    if !is_valid_package_target(&joined) {
+        return None;
+    }
+
+    Some(joined)
 }
 
 #[allow(dead_code)]
@@ -1805,7 +1854,12 @@ fn parse_find_package_intent(tokens: &[String]) -> Option<String> {
         return None;
     }
 
-    Some(pkg_tokens.join(" "))
+    let joined = pkg_tokens.join(" ");
+    if !is_valid_package_target(&joined) {
+        return None;
+    }
+
+    Some(joined)
 }
 
 fn parse_find_package_intent_str(lower: &str) -> Option<String> {
@@ -1914,49 +1968,136 @@ const UNIVERSAL_PACKAGES: &[UniversalPackage] = &[
     UniversalPackage { key: "alacritty", arch_pkg: "alacritty", debian_pkg: "alacritty", fedora_pkg: "alacritty", desc: "Cross-platform GPU terminal emulator", is_aur: false },
 ];
 
-fn resolve_package_command(pkg: &str, ctx: &SystemContext) -> (String, String, String) {
-    let lower_pkg = pkg.to_lowercase().trim().to_string();
+/// Resolve a package install command. Returns None for inputs that are too short/ambiguous.
+fn resolve_package_command(pkg: &str, ctx: &SystemContext) -> Option<(String, String, String)> {
+    let lower_pkg = pkg.to_lowercase();
+    let lower_pkg = lower_pkg.trim();
+
+    // Reject obviously incomplete / too-short inputs that aren't known short packages
+    if !is_valid_package_target(lower_pkg) {
+        return None;
+    }
+
     let pm = ctx.pkg_manager;
 
     // 1. Exact match in catalog
     for entry in UNIVERSAL_PACKAGES {
-        if lower_pkg == entry.key || lower_pkg == entry.arch_pkg || lower_pkg == entry.debian_pkg || lower_pkg == entry.fedora_pkg {
-            return format_package_install(entry, ctx);
+        if lower_pkg == entry.key || lower_pkg == entry.arch_pkg {
+            return Some(format_package_install(entry, ctx));
         }
     }
 
-    // 2. Token containment (e.g. user typed "google chrome" or "chrome browser")
+    // 2. The user typed something that CONTAINS a catalog key as a full word
+    //    e.g. "google chrome" contains "chrome", "brave browser" contains "brave"
+    //    NEVER match the reverse (entry.key contains lower_pkg) — that causes "l" to match
+    //    every entry that has "l" in its key.
     for entry in UNIVERSAL_PACKAGES {
-        if lower_pkg.contains(entry.key) || entry.key.contains(&lower_pkg) {
-            return format_package_install(entry, ctx);
+        if lower_pkg.contains(entry.key) && entry.key.len() >= 3 {
+            return Some(format_package_install(entry, ctx));
         }
     }
 
-    // 3. Fuzzy match entire string in catalog
-    let keys: Vec<&str> = UNIVERSAL_PACKAGES.iter().map(|p| p.key).collect();
-    if let Some((best_key, score)) = fuzzy_find_best(&lower_pkg, &keys, 0.68) {
-        if let Some(entry) = UNIVERSAL_PACKAGES.iter().find(|p| p.key == best_key) {
-            let (cmd, desc, cat) = format_package_install(entry, ctx);
-            return (cmd, format!("{} (fuzzy match {:.0}%)", desc, score * 100.0), cat);
-        }
-    }
-
-    // 4. Try fuzzy match for individual words inside lower_pkg
-    for word in lower_pkg.split_whitespace() {
-        if let Some((best_key, score)) = fuzzy_find_best(word, &keys, 0.70) {
-            if let Some(entry) = UNIVERSAL_PACKAGES.iter().find(|p| p.key == best_key) {
-                let (cmd, desc, cat) = format_package_install(entry, ctx);
-                return (cmd, format!("{} (fuzzy match {:.0}%)", desc, score * 100.0), cat);
+    // 3. Prefix match: user typed a prefix of a catalog key (min 4 chars)
+    if lower_pkg.len() >= 4 {
+        for entry in UNIVERSAL_PACKAGES {
+            if entry.key.starts_with(lower_pkg) {
+                return Some(format_package_install(entry, ctx));
             }
         }
     }
 
-    // 5. Fallback to host distro's native package manager install command
-    (
-        pm.install_cmd(&lower_pkg),
-        format!("Install '{}' via {}", lower_pkg, pm.name()),
-        pm.name().to_string(),
-    )
+    // 4. Fuzzy match entire string in catalog (high threshold)
+    let keys: Vec<&str> = UNIVERSAL_PACKAGES.iter().map(|p| p.key).collect();
+    if let Some((best_key, score)) = fuzzy_find_best(lower_pkg, &keys, 0.72) {
+        if let Some(entry) = UNIVERSAL_PACKAGES.iter().find(|p| p.key == best_key) {
+            let (cmd, desc, cat) = format_package_install(entry, ctx);
+            return Some((cmd, format!("{} (fuzzy match {:.0}%)", desc, score * 100.0), cat));
+        }
+    }
+
+    // 5. Fuzzy match individual words (only for words ≥ 4 chars to avoid false positives)
+    for word in lower_pkg.split_whitespace() {
+        if word.len() >= 4 {
+            if let Some((best_key, score)) = fuzzy_find_best(word, &keys, 0.75) {
+                if let Some(entry) = UNIVERSAL_PACKAGES.iter().find(|p| p.key == best_key) {
+                    let (cmd, desc, cat) = format_package_install(entry, ctx);
+                    return Some((cmd, format!("{} (fuzzy match {:.0}%)", desc, score * 100.0), cat));
+                }
+            }
+        }
+    }
+
+    // 6. Only fall back to native package manager for well-formed package names (≥ 3 chars)
+    if lower_pkg.len() >= 3 {
+        return Some((
+            pm.install_cmd(lower_pkg),
+            format!("Install '{}' via {}", lower_pkg, pm.name()),
+            pm.name().to_string(),
+        ));
+    }
+
+    None
+}
+
+/// Resolve a package remove/uninstall command. Returns None for incomplete/ambiguous inputs.
+fn resolve_package_remove(pkg: &str, ctx: &SystemContext) -> Option<(String, String, String)> {
+    let lower_pkg = pkg.to_lowercase();
+    let lower_pkg = lower_pkg.trim();
+
+    // Reject short/incomplete package names
+    if !is_valid_package_target(lower_pkg) {
+        return None;
+    }
+
+    let pm = ctx.pkg_manager;
+
+    // 1. Exact catalog key match → use the distro-specific package name
+    for entry in UNIVERSAL_PACKAGES {
+        if lower_pkg == entry.key {
+            let arch_name = entry.arch_pkg;
+            return Some((
+                pm.remove_cmd(arch_name),
+                format!("Uninstall {} ({})", entry.desc, pm.name()),
+                pm.name().to_string(),
+            ));
+        }
+    }
+
+    // 2. The user typed a phrase containing a catalog key (e.g. "google chrome")
+    for entry in UNIVERSAL_PACKAGES {
+        if lower_pkg.contains(entry.key) && entry.key.len() >= 3 {
+            let arch_name = entry.arch_pkg;
+            return Some((
+                pm.remove_cmd(arch_name),
+                format!("Uninstall {} ({})", entry.desc, pm.name()),
+                pm.name().to_string(),
+            ));
+        }
+    }
+
+    // 3. Fuzzy match (high threshold to avoid false positives on destructive ops)
+    let keys: Vec<&str> = UNIVERSAL_PACKAGES.iter().map(|p| p.key).collect();
+    if let Some((best_key, score)) = fuzzy_find_best(lower_pkg, &keys, 0.78) {
+        if let Some(entry) = UNIVERSAL_PACKAGES.iter().find(|p| p.key == best_key) {
+            let arch_name = entry.arch_pkg;
+            return Some((
+                pm.remove_cmd(arch_name),
+                format!("Uninstall {} ({:.0}% match, {})", entry.desc, score * 100.0, pm.name()),
+                pm.name().to_string(),
+            ));
+        }
+    }
+
+    // 4. Fallback: only for well-formed names ≥ 3 chars
+    if lower_pkg.len() >= 3 {
+        return Some((
+            pm.remove_cmd(lower_pkg),
+            format!("Uninstall '{}' via {}", lower_pkg, pm.name()),
+            pm.name().to_string(),
+        ));
+    }
+
+    None
 }
 
 fn format_package_install(entry: &UniversalPackage, ctx: &SystemContext) -> (String, String, String) {

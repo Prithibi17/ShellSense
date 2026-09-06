@@ -133,10 +133,14 @@ impl AssistantEngine {
         candidates.extend(det_matches);
 
         // 4. Query AI intent engine if needed and enabled
+        // IMPORTANT: Skip AI for Ghost (inline keystroke) triggers — per-keystroke LLM inference
+        // is too slow and prone to hallucinating destructive commands on partial inputs like "rm l".
         let mut ai_available = false;
         let mut model_used = None;
 
-        if self.config.general.ai_enabled && (!has_strong_det || candidates.len() < self.config.general.max_suggestions) {
+        let is_ghost = req.trigger == protocol::SuggestTrigger::Ghost;
+
+        if !is_ghost && self.config.general.ai_enabled && (!has_strong_det || candidates.len() < self.config.general.max_suggestions) {
             match self.provider.suggest(&req.input, &ctx).await {
                 Ok(ai_sugs) => {
                     ai_available = true;
