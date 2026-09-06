@@ -14,6 +14,7 @@ fn make_context(files: Vec<&str>, is_git: bool) -> SystemContext {
         os_id: "cachyos".into(),
         shell: "fish".into(),
         recent_history: Vec::new(),
+        ..SystemContext::default()
     }
 }
 
@@ -113,3 +114,86 @@ fn test_git_heuristics() {
     assert!(!sugs.is_empty());
     assert_eq!(sugs[0].command, "git reset --soft HEAD~1");
 }
+
+#[test]
+fn test_universal_distro_adaptation() {
+    use terminal_assistant::context::{DistroFamily, PackageManager};
+
+    // 1. Ubuntu / Debian context
+    let mut ctx_ubuntu = make_context(vec![], false);
+    ctx_ubuntu.distro_family = DistroFamily::Debian;
+    ctx_ubuntu.pkg_manager = PackageManager::Apt;
+
+    let sugs = match_deterministic("instal chrome", &ctx_ubuntu);
+    assert!(!sugs.is_empty());
+    assert_eq!(sugs[0].command, "sudo apt install google-chrome-stable");
+
+    let sugs = match_deterministic("update system", &ctx_ubuntu);
+    assert!(!sugs.is_empty());
+    assert_eq!(sugs[0].command, "sudo apt update && sudo apt upgrade");
+
+    let sugs = match_deterministic("clean orphans", &ctx_ubuntu);
+    assert!(!sugs.is_empty());
+    assert_eq!(sugs[0].command, "sudo apt autoremove");
+
+    // 2. Fedora context
+    let mut ctx_fedora = make_context(vec![], false);
+    ctx_fedora.distro_family = DistroFamily::Fedora;
+    ctx_fedora.pkg_manager = PackageManager::Dnf;
+
+    let sugs = match_deterministic("instal chrome", &ctx_fedora);
+    assert!(!sugs.is_empty());
+    assert_eq!(sugs[0].command, "sudo dnf install google-chrome-stable");
+
+    let sugs = match_deterministic("update system", &ctx_fedora);
+    assert!(!sugs.is_empty());
+    assert_eq!(sugs[0].command, "sudo dnf upgrade");
+
+    let sugs = match_deterministic("clean orphans", &ctx_fedora);
+    assert!(!sugs.is_empty());
+    assert_eq!(sugs[0].command, "sudo dnf autoremove");
+
+    // 3. Alpine Linux context
+    let mut ctx_alpine = make_context(vec![], false);
+    ctx_alpine.distro_family = DistroFamily::Alpine;
+    ctx_alpine.pkg_manager = PackageManager::Apk;
+
+    let sugs = match_deterministic("update system", &ctx_alpine);
+    assert!(!sugs.is_empty());
+    assert_eq!(sugs[0].command, "sudo apk update && sudo apk upgrade");
+}
+
+#[test]
+fn test_universal_hardware_adaptation() {
+    use terminal_assistant::context::{AudioSystem, FormFactor, GpuVendor};
+
+    // 1. AMD Radeon GPU
+    let mut ctx_amd = make_context(vec![], false);
+    ctx_amd.gpu_vendor = GpuVendor::Amd;
+    let sugs = match_deterministic("check gpu", &ctx_amd);
+    assert!(!sugs.is_empty());
+    assert_eq!(sugs[0].command, "radeontop");
+
+    // 2. Intel Arc / iGPU
+    let mut ctx_intel = make_context(vec![], false);
+    ctx_intel.gpu_vendor = GpuVendor::Intel;
+    let sugs = match_deterministic("check gpu", &ctx_intel);
+    assert!(!sugs.is_empty());
+    assert_eq!(sugs[0].command, "sudo intel_gpu_top");
+
+    // 3. PulseAudio
+    let mut ctx_pulse = make_context(vec![], false);
+    ctx_pulse.audio_system = AudioSystem::Pulseaudio;
+    let sugs = match_deterministic("restart audio", &ctx_pulse);
+    assert!(!sugs.is_empty());
+    assert_eq!(sugs[0].command, "pulseaudio -k && pulseaudio --start");
+
+    // 4. Non-ASUS Generic Laptop (universal powerprofilesctl)
+    let mut ctx_generic_laptop = make_context(vec![], false);
+    ctx_generic_laptop.form_factor = FormFactor::Laptop;
+    ctx_generic_laptop.has_asusctl = false;
+    let sugs = match_deterministic("fan turbo", &ctx_generic_laptop);
+    assert!(!sugs.is_empty());
+    assert_eq!(sugs[0].command, "powerprofilesctl set performance");
+}
+

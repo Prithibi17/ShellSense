@@ -1,4 +1,4 @@
-use crate::context::SystemContext;
+use crate::context::{AudioSystem, DistroFamily, FormFactor, GpuVendor, InitSystem, DisplayServer, SystemContext};
 use crate::fuzzy::{fuzzy_find_best, matches_fuzzy};
 use crate::protocol::{CandidateSuggestion, RiskLevel};
 use regex::Regex;
@@ -10,8 +10,8 @@ pub fn match_deterministic(input: &str, ctx: &SystemContext) -> Vec<CandidateSug
         return suggestions;
     }
 
-    // 1. Power, Reboot, Shutdown & Session Controls
-    if let Some(sugs) = match_system_power_and_session(&lower) {
+    // 1. Power, Reboot, Shutdown & Session Controls (Init-system aware)
+    if let Some(sugs) = match_system_power_and_session(&lower, ctx) {
         return sugs;
     }
 
@@ -25,8 +25,8 @@ pub fn match_deterministic(input: &str, ctx: &SystemContext) -> Vec<CandidateSug
         return sugs;
     }
 
-    // 4. Developer Tools, Python venv, Rust, Docker & Fish Environment
-    if let Some(sugs) = match_developer_and_env(&lower) {
+    // 4. Developer Tools, Python venv, Rust, Docker & Shell Environment
+    if let Some(sugs) = match_developer_and_env(&lower, ctx) {
         return sugs;
     }
 
@@ -50,8 +50,8 @@ pub fn match_deterministic(input: &str, ctx: &SystemContext) -> Vec<CandidateSug
         }
     }
 
-    // 8. CachyOS / Arch Package Management (pacman / paru) & Fixes
-    if let Some(sugs) = match_package_management(&lower) {
+    // 8. Universal Package Management (pacman, apt, dnf, zypper, apk, xbps, etc.)
+    if let Some(sugs) = match_package_management(&lower, ctx) {
         return sugs;
     }
 
@@ -60,13 +60,13 @@ pub fn match_deterministic(input: &str, ctx: &SystemContext) -> Vec<CandidateSug
         return sugs;
     }
 
-    // 10. Hardware, ASUS TUF, GPU, Fan, Battery & Audio
-    if let Some(sugs) = match_hardware_and_laptop(&lower) {
+    // 10. Hardware, GPU (NVIDIA / AMD / Intel), Battery, Backlight & Audio
+    if let Some(sugs) = match_hardware_and_laptop(&lower, ctx) {
         return sugs;
     }
 
-    // 11. Systemd & Service Management
-    if let Some(sugs) = match_systemd_and_services(&lower) {
+    // 11. Services & System Administration (systemd / OpenRC / runit aware)
+    if let Some(sugs) = match_services_and_init(&lower, ctx) {
         return sugs;
     }
 
@@ -85,14 +85,16 @@ pub fn match_deterministic(input: &str, ctx: &SystemContext) -> Vec<CandidateSug
         return sugs;
     }
 
-    // 15. Hyprland & Wayland Desktop Controls
-    if let Some(sugs) = match_hyprland_and_desktop(&lower) {
+    // 15. Desktop Environment & Window Manager (Hyprland, Sway, GNOME, KDE, X11)
+    if let Some(sugs) = match_desktop_and_window_manager(&lower, ctx) {
         return sugs;
     }
 
-    // 16. Btrfs & CachyOS Administration
-    if let Some(sugs) = match_btrfs_and_cachyos(&lower) {
-        return sugs;
+    // 16. Distro-Specific Extras (Btrfs, Snapper, CachyOS)
+    if ctx.distro_family == DistroFamily::Arch {
+        if let Some(sugs) = match_btrfs_and_cachyos(&lower) {
+            return sugs;
+        }
     }
 
     suggestions
@@ -101,26 +103,45 @@ pub fn match_deterministic(input: &str, ctx: &SystemContext) -> Vec<CandidateSug
 // -----------------------------------------------------------------------------
 // 1. Power, Reboot, Shutdown & Session Controls
 // -----------------------------------------------------------------------------
-fn match_system_power_and_session(lower: &str) -> Option<Vec<CandidateSuggestion>> {
+fn match_system_power_and_session(lower: &str, ctx: &SystemContext) -> Option<Vec<CandidateSuggestion>> {
     let mut sugs = Vec::new();
+    let is_systemd = ctx.init_system == InitSystem::Systemd;
+
     match lower {
         "reboot" | "restart pc" | "restart laptop" | "restart computer" | "restart system" => {
-            sugs.push(sug("systemctl reboot", "Reboot and restart the operating system", 0.99, RiskLevel::Medium, Some("Reboots system immediately".to_string()), "System"));
+            let cmd = if is_systemd { "systemctl reboot" } else { "sudo reboot" };
+            sugs.push(sug(cmd, "Reboot and restart the operating system", 0.99, RiskLevel::Medium, Some("Reboots system immediately".to_string()), "System"));
         }
         "shutdown" | "poweroff" | "power off" | "turn off" | "shut down" => {
-            sugs.push(sug("systemctl poweroff", "Safely shut down and power off the machine", 0.99, RiskLevel::Destructive, Some("Powers off machine immediately".to_string()), "System"));
+            let cmd = if is_systemd { "systemctl poweroff" } else { "sudo poweroff" };
+            sugs.push(sug(cmd, "Safely shut down and power off the machine", 0.99, RiskLevel::Destructive, Some("Powers off machine immediately".to_string()), "System"));
         }
         "sleep" | "suspend" => {
-            sugs.push(sug("systemctl suspend", "Suspend system into low-power RAM sleep mode", 0.99, RiskLevel::Low, None, "System"));
+            let cmd = if is_systemd { "systemctl suspend" } else { "sudo zzz || sudo pm-suspend" };
+            sugs.push(sug(cmd, "Suspend system into low-power RAM sleep mode", 0.99, RiskLevel::Low, None, "System"));
         }
         "hibernate" => {
-            sugs.push(sug("systemctl hibernate", "Hibernate system state onto swap and power down", 0.98, RiskLevel::Medium, None, "System"));
+            let cmd = if is_systemd { "systemctl hibernate" } else { "sudo ZZZ || sudo pm-hibernate" };
+            sugs.push(sug(cmd, "Hibernate system state onto disk swap and power down", 0.98, RiskLevel::Medium, None, "System"));
         }
         "lock screen" | "lock" => {
-            sugs.push(sug("hyprlock", "Lock active Wayland session with hyprlock", 0.99, RiskLevel::Low, None, "Desktop"));
+            let cmd = match &ctx.display_server {
+                DisplayServer::Wayland(wm) if wm == "hyprland" => "hyprlock",
+                DisplayServer::Wayland(wm) if wm == "sway" => "swaylock",
+                DisplayServer::Wayland(wm) if wm == "gnome" => "loginctl lock-session",
+                DisplayServer::Wayland(wm) if wm == "kde" => "loginctl lock-session",
+                DisplayServer::X11 => "xflock4 || i3lock || loginctl lock-session",
+                _ => "loginctl lock-session",
+            };
+            sugs.push(sug(cmd, "Lock active desktop screen session", 0.99, RiskLevel::Low, None, "Desktop"));
         }
-        "logout" | "exit desktop" | "quit hyprland" => {
-            sugs.push(sug("hyprctl dispatch exit", "Exit Hyprland desktop session and return to display manager", 0.98, RiskLevel::Medium, None, "Desktop"));
+        "logout" | "exit desktop" | "quit desktop" => {
+            let cmd = match &ctx.display_server {
+                DisplayServer::Wayland(wm) if wm == "hyprland" => "hyprctl dispatch exit",
+                DisplayServer::Wayland(wm) if wm == "sway" => "swaymsg exit",
+                _ => "loginctl terminate-user $USER",
+            };
+            sugs.push(sug(cmd, "Exit desktop session and return to display manager", 0.98, RiskLevel::Medium, None, "Desktop"));
         }
         _ => return None,
     }
@@ -214,52 +235,75 @@ fn match_command_tool_flags(lower: &str) -> Option<Vec<CandidateSuggestion>> {
 }
 
 // -----------------------------------------------------------------------------
-// 4. Developer Tools, Python venv, Rust, Docker & Fish Environment
+// 4. Developer Tools, Python venv, Rust, Docker & Shell Environment
 // -----------------------------------------------------------------------------
-fn match_developer_and_env(lower: &str) -> Option<Vec<CandidateSuggestion>> {
+fn match_developer_and_env(lower: &str, ctx: &SystemContext) -> Option<Vec<CandidateSuggestion>> {
     let mut sugs = Vec::new();
+    let is_fish = ctx.shell == "fish";
+    let is_zsh = ctx.shell == "zsh";
+
     match lower {
-        "reload fish" | "source fish" | "reload shell" => {
-            sugs.push(sug("source ~/.config/fish/config.fish", "Reload Fish shell configuration live", 0.99, RiskLevel::Low, None, "Shell"));
+        "reload shell" | "source shell" | "reload config" => {
+            let cmd = if is_fish {
+                "source ~/.config/fish/config.fish"
+            } else if is_zsh {
+                "source ~/.zshrc"
+            } else {
+                "source ~/.bashrc"
+            };
+            sugs.push(sug(cmd, "Reload current shell configuration live", 0.99, RiskLevel::Low, None, "Shell"));
         }
-        "fish config" | "edit fish" => {
-            sugs.push(sug("nano ~/.config/fish/config.fish", "Edit primary Fish shell configuration in nano", 0.98, RiskLevel::Low, None, "Shell"));
+        "edit config" | "shell config" => {
+            let cmd = if is_fish {
+                "nano ~/.config/fish/config.fish"
+            } else if is_zsh {
+                "nano ~/.zshrc"
+            } else {
+                "nano ~/.bashrc"
+            };
+            sugs.push(sug(cmd, "Edit active shell profile configuration", 0.98, RiskLevel::Low, None, "Shell"));
         }
         "python venv" | "create venv" | "new venv" => {
-            sugs.push(sug("python -m venv .venv && source .venv/bin/activate.fish", "Create Python virtual environment in .venv and activate for Fish", 0.99, RiskLevel::Low, None, "Python"));
+            let act = if is_fish { "source .venv/bin/activate.fish" } else { "source .venv/bin/activate" };
+            sugs.push(sug(&format!("python3 -m venv .venv && {}", act), "Create Python virtual environment in .venv and activate", 0.99, RiskLevel::Low, None, "Python"));
         }
         "clean rust" | "cargo clean" | "clean cargo" => {
-            sugs.push(sug("cargo clean", "Remove target build directory and free disk space", 0.99, RiskLevel::Low, None, "Rust"));
+            sugs.push(sug("cargo clean", "Remove target build directory and reclaim disk space", 0.99, RiskLevel::Low, None, "Rust"));
         }
         "update rust" | "rustup update" => {
             sugs.push(sug("rustup update", "Update Rust toolchain and components to latest version", 0.99, RiskLevel::Low, None, "Rust"));
         }
         "docker status" => {
-            sugs.push(sug("systemctl status docker", "Inspect Docker daemon service status", 0.98, RiskLevel::Low, None, "Docker"));
+            let cmd = if ctx.init_system == InitSystem::Systemd { "systemctl status docker" } else { "sudo rc-service docker status" };
+            sugs.push(sug(cmd, "Inspect Docker daemon service operational status", 0.98, RiskLevel::Low, None, "Docker"));
         }
         "docker start" | "start docker" => {
-            sugs.push(sug("sudo systemctl start docker", "Start the Docker containerization daemon", 0.98, RiskLevel::Medium, None, "Docker"));
+            let cmd = if ctx.init_system == InitSystem::Systemd { "sudo systemctl start docker" } else { "sudo rc-service docker start" };
+            sugs.push(sug(cmd, "Start the Docker container engine daemon", 0.98, RiskLevel::Medium, None, "Docker"));
         }
         "docker restart" | "restart docker" => {
-            sugs.push(sug("sudo systemctl restart docker", "Restart the Docker containerization engine", 0.98, RiskLevel::Medium, None, "Docker"));
+            let cmd = if ctx.init_system == InitSystem::Systemd { "sudo systemctl restart docker" } else { "sudo rc-service docker restart" };
+            sugs.push(sug(cmd, "Restart the Docker daemon engine", 0.98, RiskLevel::Medium, None, "Docker"));
         }
         "docker clean" | "clean docker" | "prune docker" => {
-            sugs.push(sug("docker system prune -a --volumes", "Remove all stopped containers, unused networks, dangling images, and build cache", 0.98, RiskLevel::Destructive, Some("⚠ Removes all unused Docker containers, images and volumes".to_string()), "Docker"));
+            sugs.push(sug("docker system prune -a --volumes", "Remove all stopped containers, unused networks, dangling images, and volumes", 0.98, RiskLevel::Destructive, Some("⚠ Removes all unused Docker containers and volumes".to_string()), "Docker"));
         }
         "generate ssh key" | "new ssh key" | "ssh key" => {
             sugs.push(sug("ssh-keygen -t ed25519 -C \"$USER@$(hostname)\"", "Generate modern, high-security Ed25519 SSH keypair", 0.98, RiskLevel::Low, None, "Security"));
         }
         "copy ssh key" | "show ssh key" => {
-            sugs.push(sug("cat ~/.ssh/id_ed25519.pub | wl-copy", "Copy public SSH key directly into Wayland clipboard", 0.98, RiskLevel::Low, None, "Security"));
+            let clip = match &ctx.display_server {
+                DisplayServer::Wayland(_) => "wl-copy",
+                DisplayServer::X11 => "xclip -selection clipboard",
+                _ => "cat",
+            };
+            sugs.push(sug(&format!("cat ~/.ssh/id_ed25519.pub | {}", clip), "Copy public SSH key into clipboard buffer", 0.98, RiskLevel::Low, None, "Security"));
         }
         "kill steam" | "restart steam" => {
             sugs.push(sug("pkill -9 steam; steam &", "Force kill hung Steam client and restart in background", 0.98, RiskLevel::Medium, None, "Gaming"));
         }
         "gamemode status" | "check gamemode" => {
             sugs.push(sug("gamemoded -s", "Query Feral GameMode daemon active status", 0.98, RiskLevel::Low, None, "Gaming"));
-        }
-        "protonup" => {
-            sugs.push(sug("protonup-qt", "Launch GE-Proton and Wine manager utility", 0.98, RiskLevel::Low, None, "Gaming"));
         }
         _ => return None,
     }
@@ -330,7 +374,7 @@ fn match_path_aware_projects(lower: &str, ctx: &SystemContext) -> Option<Vec<Can
 
     if ctx.files.iter().any(|f| f == "main.py") {
         if is_run {
-            sugs.push(sug("python main.py", "Execute main Python entrypoint script", 0.98, RiskLevel::Low, None, "Project"));
+            sugs.push(sug("python3 main.py", "Execute main Python entrypoint script", 0.98, RiskLevel::Low, None, "Project"));
         }
         return Some(sugs);
     }
@@ -385,7 +429,7 @@ fn match_git_workflow(lower: &str, _ctx: &SystemContext) -> Option<Vec<Candidate
         return Some(sugs);
     }
 
-    if lower == "check changes" || lower == "status" || lower == "check git" || lower == "git st" {
+    if lower == "check status" || lower == "check changes" || lower == "status" || lower == "check git" || lower == "git st" || lower == "git status" {
         sugs.push(sug("git status -s", "Show concise working tree status", 0.98, RiskLevel::Low, None, "Git"));
         sugs.push(sug("git diff", "Inspect uncommitted code changes in working tree", 0.92, RiskLevel::Low, None, "Git"));
         return Some(sugs);
@@ -399,7 +443,6 @@ fn match_git_workflow(lower: &str, _ctx: &SystemContext) -> Option<Vec<Candidate
 
     if lower == "push changes" || lower == "git push" || lower == "push" {
         sugs.push(sug("git push", "Push committed changes to remote repository", 0.98, RiskLevel::Low, None, "Git"));
-        sugs.push(sug("git push -u origin (git branch --show-current)", "Push and set upstream tracking branch", 0.92, RiskLevel::Low, None, "Git"));
         return Some(sugs);
     }
 
@@ -444,99 +487,108 @@ fn match_git_workflow(lower: &str, _ctx: &SystemContext) -> Option<Vec<Candidate
 }
 
 // -----------------------------------------------------------------------------
-// 8. CachyOS / Arch Package Management (pacman / paru) & Fixes
+// 8. Universal Package Management (pacman, apt, dnf, zypper, apk, xbps, etc.)
 // -----------------------------------------------------------------------------
-fn match_package_management(lower: &str) -> Option<Vec<CandidateSuggestion>> {
+fn match_package_management(lower: &str, ctx: &SystemContext) -> Option<Vec<CandidateSuggestion>> {
     let mut sugs = Vec::new();
-
-    // Lock file removal / database fixes
-    if lower == "unlock pacman" || lower == "remove pacman lock" || lower == "pacman lock" || lower == "db.lck" || lower == "database locked" {
-        sugs.push(sug("sudo rm -f /var/lib/pacman/db.lck", "Remove stale pacman database lock file", 0.99, RiskLevel::Medium, Some("Ensures no other pacman instance is running before deleting lock file".to_string()), "Pacman"));
-        return Some(sugs);
-    }
-
-    // Keyring repair
-    if lower == "fix pacman keys" || lower == "fix keyring" || lower == "keyring error" || lower == "signature error" || lower == "fix keys" {
-        sugs.push(sug("sudo pacman -Sy archlinux-keyring cachyos-keyring && sudo pacman-key --refresh-keys", "Refresh and populate Arch Linux and CachyOS cryptographic GPG keyrings", 0.99, RiskLevel::Medium, None, "Pacman"));
-        return Some(sugs);
-    }
-
-    // Force database sync
-    if lower == "force update" || lower == "sync pacman" || lower == "force refresh pacman" || lower == "pacman syyu" {
-        sugs.push(sug("sudo pacman -Syyu", "Force refresh all package databases and run full system upgrade", 0.99, RiskLevel::Low, None, "Pacman"));
-        return Some(sugs);
-    }
+    let pm = ctx.pkg_manager;
 
     // System Updates
-    if lower == "update system" || lower == "upgrade system" || lower == "system update" || lower == "update" || lower == "upgrade" || lower == "pacman syu" {
-        sugs.push(sug("sudo pacman -Syu", "Synchronize repositories and upgrade all system packages", 0.99, RiskLevel::Low, None, "Pacman"));
-        sugs.push(sug("paru -Syu", "Upgrade both official and AUR packages seamlessly", 0.96, RiskLevel::Low, None, "AUR"));
+    if lower == "update system" || lower == "upgrade system" || lower == "system update" || lower == "update" || lower == "upgrade" {
+        sugs.push(sug(&pm.update_cmd(), &format!("Upgrade all system packages using {}", pm.name()), 0.99, RiskLevel::Low, None, "Packages"));
+        if ctx.distro_family == DistroFamily::Arch && pm != crate::context::PackageManager::Paru {
+            sugs.push(sug("paru -Syu", "Upgrade both official and AUR packages seamlessly", 0.94, RiskLevel::Low, None, "AUR"));
+        }
         return Some(sugs);
     }
 
-    // Mirror updates
-    if lower == "update mirrors" || lower == "fastest mirrors" || lower == "rank mirrors" {
-        sugs.push(sug("sudo cachyos-rate-mirrors", "Benchmark and update CachyOS and Arch package mirrors", 0.98, RiskLevel::Low, None, "Pacman"));
-        sugs.push(sug("rate-mirrors arch | sudo tee /etc/pacman.d/mirrorlist", "Rate Arch Linux mirrors by download latency", 0.92, RiskLevel::Low, None, "Pacman"));
+    // Clean cache
+    if lower == "clean cache" || lower == "clean packages" || lower == "clear cache" {
+        sugs.push(sug(&pm.clean_cache_cmd(), &format!("Clean cached package files using {}", pm.name()), 0.98, RiskLevel::Low, None, "Packages"));
         return Some(sugs);
     }
 
-    // Clean cache / orphans
-    if lower == "clean cache" || lower == "clean pacman" || lower == "clear pacman cache" {
-        sugs.push(sug("sudo pacman -Sc", "Remove old package tarballs from pacman cache", 0.97, RiskLevel::Low, None, "Pacman"));
-        sugs.push(sug("paru -Scd", "Clean unused AUR and pacman cached build files", 0.94, RiskLevel::Low, None, "AUR"));
+    // Clean orphans / unneeded dependencies
+    if lower == "clean orphans" || lower == "remove orphans" || lower == "delete orphans" || lower == "autoremove" {
+        let cmd = match ctx.distro_family {
+            DistroFamily::Arch => "sudo pacman -Rns (pacman -Qtdq)",
+            DistroFamily::Debian => "sudo apt autoremove",
+            DistroFamily::Fedora => "sudo dnf autoremove",
+            DistroFamily::OpenSuse => "sudo zypper packages --orphaned",
+            DistroFamily::Void => "sudo xbps-remove -o",
+            DistroFamily::Alpine => "sudo apk cache clean",
+            _ => "sudo apt autoremove",
+        };
+        sugs.push(sug(cmd, "Remove unneeded orphaned dependencies", 0.98, RiskLevel::Destructive, Some("⚠ Removes unused package dependencies. Review list before confirming.".to_string()), "Packages"));
         return Some(sugs);
     }
 
-    if lower == "clean orphans" || lower == "remove orphans" || lower == "delete orphans" {
-        sugs.push(sug("sudo pacman -Rns (pacman -Qtdq)", "Find and recursively delete all orphaned packages", 0.98, RiskLevel::Destructive, Some("⚠ Removes unneeded dependencies. Verify package list before confirming.".to_string()), "Pacman"));
-        return Some(sugs);
+    // Arch-specific lock removal & keyring repairs
+    if ctx.distro_family == DistroFamily::Arch {
+        if lower == "unlock pacman" || lower == "remove pacman lock" || lower == "pacman lock" || lower == "db.lck" {
+            sugs.push(sug("sudo rm -f /var/lib/pacman/db.lck", "Remove stale pacman database lock file", 0.99, RiskLevel::Medium, None, "Pacman"));
+            return Some(sugs);
+        }
+        if lower == "fix pacman keys" || lower == "fix keyring" || lower == "keyring error" || lower == "fix keys" {
+            sugs.push(sug("sudo pacman -Sy archlinux-keyring cachyos-keyring && sudo pacman-key --refresh-keys", "Refresh and populate Arch Linux and CachyOS cryptographic GPG keyrings", 0.99, RiskLevel::Medium, None, "Pacman"));
+            return Some(sugs);
+        }
+        if lower == "force update" || lower == "sync pacman" {
+            sugs.push(sug("sudo pacman -Syyu", "Force refresh all package databases and run full upgrade", 0.99, RiskLevel::Low, None, "Pacman"));
+            return Some(sugs);
+        }
+        if lower == "update mirrors" || lower == "fastest mirrors" {
+            sugs.push(sug("sudo cachyos-rate-mirrors", "Benchmark and update CachyOS and Arch package mirrors", 0.98, RiskLevel::Low, None, "Pacman"));
+            return Some(sugs);
+        }
     }
 
-    if lower == "clean journal" || lower == "vacuum logs" || lower == "clear logs" || lower == "clean logs" {
-        sugs.push(sug("sudo journalctl --vacuum-time=3d", "Clean systemd journal logs older than 3 days", 0.98, RiskLevel::Low, None, "Systemd"));
-        return Some(sugs);
+    // Debian / Ubuntu specific PPA & fix broken
+    if ctx.distro_family == DistroFamily::Debian {
+        if lower == "fix broken" || lower == "fix apt" || lower == "fix dependencies" {
+            sugs.push(sug("sudo apt --fix-broken install", "Repair broken dependency trees and missing packages", 0.99, RiskLevel::Medium, None, "Apt"));
+            return Some(sugs);
+        }
     }
 
+    // List installed packages
     if lower == "list installed packages" || lower == "all packages" || lower == "list packages" {
-        sugs.push(sug("pacman -Qe", "List all explicitly installed packages", 0.98, RiskLevel::Low, None, "Pacman"));
-        return Some(sugs);
-    }
-
-    // CachyOS tools
-    if lower == "cachyos hello" {
-        sugs.push(sug("cachyos-hello", "Open CachyOS Welcome assistant application", 0.98, RiskLevel::Low, None, "CachyOS"));
-        return Some(sugs);
-    }
-    if lower == "cachyos package installer" || lower == "cachyos software" {
-        sugs.push(sug("cachyos-packageinstaller", "Launch graphical CachyOS package installer", 0.98, RiskLevel::Low, None, "CachyOS"));
+        let cmd = match ctx.distro_family {
+            DistroFamily::Arch => "pacman -Qe",
+            DistroFamily::Debian => "apt list --installed",
+            DistroFamily::Fedora => "dnf list installed",
+            DistroFamily::OpenSuse => "zypper search -i",
+            DistroFamily::Alpine => "apk info",
+            DistroFamily::Void => "xbps-query -l",
+            _ => "apt list --installed",
+        };
+        sugs.push(sug(cmd, "List all explicitly installed packages on the system", 0.98, RiskLevel::Low, None, "Packages"));
         return Some(sugs);
     }
 
     // Install intent
     if let Some(pkg) = parse_install_intent(lower) {
-        let (cmd, desc, cat) = resolve_package_command(&pkg);
+        let (cmd, desc, cat) = resolve_package_command(&pkg, ctx);
         sugs.push(sug(&cmd, &desc, 0.98, RiskLevel::Low, None, &cat));
         return Some(sugs);
     }
 
-    // Find / Search package intent
+    // Search intent
     if let Some(pkg) = parse_find_package_intent(lower) {
-        sugs.push(sug(&format!("paru -Ss {}", pkg), &format!("Search official Arch repositories and AUR for '{}'", pkg), 0.98, RiskLevel::Low, None, "AUR"));
-        sugs.push(sug(&format!("pacman -Ss {}", pkg), &format!("Search official CachyOS/Arch repositories for '{}'", pkg), 0.92, RiskLevel::Low, None, "Pacman"));
+        sugs.push(sug(&pm.search_cmd(&pkg), &format!("Search {} repositories for '{}'", pm.name(), pkg), 0.98, RiskLevel::Low, None, "Packages"));
         return Some(sugs);
     }
 
-    // Uninstall / Remove intent
+    // Uninstall intent
     if let Some(caps) = Regex::new(r#"^(?:uninstall|remove|delete)\s+(?:package\s+)?([a-zA-Z0-9_\-\.\+]+)$"#).ok()?.captures(lower) {
         let pkg = &caps[1];
         sugs.push(sug(
-            &format!("sudo pacman -Rns {}", pkg),
-            &format!("Remove package '{}' and its unused dependencies", pkg),
+            &pm.remove_cmd(pkg),
+            &format!("Remove package '{}' using {}", pkg, pm.name()),
             0.98,
             RiskLevel::Destructive,
             Some("⚠ Removes package and related dependencies. Review list before confirming.".to_string()),
-            "Pacman",
+            "Packages",
         ));
         return Some(sugs);
     }
@@ -572,76 +624,130 @@ fn match_flatpak_operations(lower: &str) -> Option<Vec<CandidateSuggestion>> {
 }
 
 // -----------------------------------------------------------------------------
-// 10. Hardware, ASUS TUF, GPU, Fan, Battery & Audio
+// 10. Hardware, GPU (NVIDIA / AMD / Intel), Battery, Backlight & Audio
 // -----------------------------------------------------------------------------
-fn match_hardware_and_laptop(lower: &str) -> Option<Vec<CandidateSuggestion>> {
+fn match_hardware_and_laptop(lower: &str, ctx: &SystemContext) -> Option<Vec<CandidateSuggestion>> {
     let mut sugs = Vec::new();
 
-    // NVIDIA GPU
-    if lower == "check nvidia" || lower == "check gpu" || lower == "nvidia" || lower == "gpu info" || lower == "gpu temp" || matches_fuzzy(lower, "check nvidia", 0.78) {
-        sugs.push(sug("nvidia-smi", "Display NVIDIA GPU utilization, temperature, and VRAM allocation", 0.99, RiskLevel::Low, None, "Hardware"));
-        sugs.push(sug("watch -n 1 nvidia-smi", "Monitor NVIDIA GPU stats live every second", 0.94, RiskLevel::Low, None, "Hardware"));
-        sugs.push(sug("lspci -nnk | grep -A4 -E \"VGA|3D|Display\"", "Inspect graphics hardware and active kernel drivers", 0.90, RiskLevel::Low, None, "Hardware"));
+    // GPU commands (Vendor-aware)
+    if lower == "check nvidia" || lower == "check gpu" || lower == "nvidia" || lower == "gpu info" || lower == "gpu temp" || lower == "gpu status" || matches_fuzzy(lower, "check nvidia", 0.78) {
+        match ctx.gpu_vendor {
+            GpuVendor::Nvidia => {
+                sugs.push(sug("nvidia-smi", "Display NVIDIA GPU utilization, temperature, and VRAM allocation", 0.99, RiskLevel::Low, None, "Hardware"));
+                sugs.push(sug("watch -n 1 nvidia-smi", "Monitor NVIDIA GPU stats live every second", 0.94, RiskLevel::Low, None, "Hardware"));
+            }
+            GpuVendor::Amd => {
+                sugs.push(sug("radeontop", "Monitor AMD Radeon GPU utilization and VRAM in real-time", 0.99, RiskLevel::Low, None, "Hardware"));
+                sugs.push(sug("rocm-smi", "Query AMD ROCm GPU clocks, temperature, and power metrics", 0.94, RiskLevel::Low, None, "Hardware"));
+            }
+            GpuVendor::Intel => {
+                sugs.push(sug("sudo intel_gpu_top", "Monitor Intel Arc and integrated GPU engine render metrics", 0.99, RiskLevel::Low, None, "Hardware"));
+            }
+            GpuVendor::Generic => {
+                sugs.push(sug("lspci -nnk | grep -A4 -E \"VGA|3D|Display\"", "Inspect graphics hardware and active kernel drivers", 0.98, RiskLevel::Low, None, "Hardware"));
+            }
+        }
+        sugs.push(sug("lspci -nnk | grep -A4 -E \"VGA|3D|Display\"", "Inspect graphics controller and active kernel drivers", 0.88, RiskLevel::Low, None, "Hardware"));
         return Some(sugs);
     }
 
     if lower == "nvidia stats" || lower == "nvidia clocks" || lower == "gpu vram" {
-        sugs.push(sug("nvidia-smi --query-gpu=utilization.gpu,utilization.memory,memory.used,memory.total,temperature.gpu,power.draw --format=csv -l 1", "Continuously print detailed GPU metrics in CSV format", 0.98, RiskLevel::Low, None, "Hardware"));
+        if ctx.gpu_vendor == GpuVendor::Nvidia {
+            sugs.push(sug("nvidia-smi --query-gpu=utilization.gpu,utilization.memory,memory.used,memory.total,temperature.gpu,power.draw --format=csv -l 1", "Continuously print detailed GPU metrics in CSV format", 0.98, RiskLevel::Low, None, "Hardware"));
+            return Some(sugs);
+        }
+    }
+
+    // Hybrid GPU switching / MUX Switch
+    if lower == "gpu mode" || lower == "switch gpu" || lower == "mux switch" || lower == "hybrid gpu" {
+        if ctx.has_asusctl {
+            sugs.push(sug("supergfxctl -g", "Query current ASUS hybrid graphics mode", 0.98, RiskLevel::Low, None, "Hardware"));
+            sugs.push(sug("supergfxctl -m Dedicated", "Switch to dedicated dGPU only (maximum performance)", 0.92, RiskLevel::Medium, None, "Hardware"));
+            sugs.push(sug("supergfxctl -m Hybrid", "Switch to dynamic Intel/AMD + NVIDIA Hybrid mode", 0.92, RiskLevel::Medium, None, "Hardware"));
+            sugs.push(sug("supergfxctl -m Integrated", "Switch to integrated graphics only (maximum battery life)", 0.92, RiskLevel::Medium, None, "Hardware"));
+            return Some(sugs);
+        } else {
+            sugs.push(sug("prime-run <command>", "Launch command using dedicated high-performance GPU", 0.95, RiskLevel::Low, None, "Hardware"));
+            sugs.push(sug("DRI_PRIME=1 <command>", "Run application on secondary discrete GPU via DRI PRIME", 0.92, RiskLevel::Low, None, "Hardware"));
+            return Some(sugs);
+        }
+    }
+
+    // ASUS Keyboard Backlight & RGB
+    if ctx.has_asusctl {
+        if lower == "keyboard light" || lower == "keyboard brightness" || lower == "keyboard backlight" || lower == "aura" {
+            sugs.push(sug("asusctl -k med", "Set ASUS TUF keyboard brightness to medium", 0.98, RiskLevel::Low, None, "Hardware"));
+            sugs.push(sug("asusctl -k high", "Set ASUS TUF keyboard brightness to maximum", 0.95, RiskLevel::Low, None, "Hardware"));
+            sugs.push(sug("asusctl -k off", "Turn off ASUS TUF keyboard backlight", 0.92, RiskLevel::Low, None, "Hardware"));
+            return Some(sugs);
+        }
+        if lower == "keyboard rgb" || lower == "rgb mode" || lower == "aura mode" {
+            sugs.push(sug("asusctl led-mode static -c ffffff", "Set keyboard backlight to clean static white", 0.98, RiskLevel::Low, None, "Hardware"));
+            sugs.push(sug("asusctl led-mode rainbow", "Set keyboard backlight to dynamic rainbow spectrum", 0.92, RiskLevel::Low, None, "Hardware"));
+            return Some(sugs);
+        }
+    }
+
+    // Power & Fan profiles (Universal FreeDesktop standard + ASUS TUF)
+    if lower == "fan turbo" || lower == "performance mode" || lower == "turbo fan" {
+        if ctx.has_asusctl {
+            sugs.push(sug("asusctl profile -P Performance", "Activate ASUS Performance/Turbo mode for maximum cooling & clocks", 0.98, RiskLevel::Low, None, "Hardware"));
+        } else {
+            sugs.push(sug("powerprofilesctl set performance", "Set Linux system-wide performance power profile", 0.98, RiskLevel::Low, None, "Hardware"));
+        }
         return Some(sugs);
     }
 
-    // Hybrid GPU switching (ASUS / supergfxctl)
-    if lower == "gpu mode" || lower == "switch gpu" || lower == "asus gpu" || lower == "mux switch" {
-        sugs.push(sug("supergfxctl -g", "Query current ASUS hybrid graphics mode", 0.98, RiskLevel::Low, None, "Hardware"));
-        sugs.push(sug("supergfxctl -m Dedicated", "Switch to dedicated NVIDIA RTX GPU only (maximum performance)", 0.92, RiskLevel::Medium, None, "Hardware"));
-        sugs.push(sug("supergfxctl -m Hybrid", "Switch to dynamic Intel + NVIDIA Hybrid mode", 0.92, RiskLevel::Medium, None, "Hardware"));
-        sugs.push(sug("supergfxctl -m Integrated", "Switch to Intel integrated graphics only (maximum battery life)", 0.92, RiskLevel::Medium, None, "Hardware"));
+    if lower == "fan quiet" || lower == "silent mode" || lower == "quiet mode" || lower == "power saver" {
+        if ctx.has_asusctl {
+            sugs.push(sug("asusctl profile -P Quiet", "Switch to Quiet/Silent power profile with reduced fan speeds", 0.98, RiskLevel::Low, None, "Hardware"));
+        } else {
+            sugs.push(sug("powerprofilesctl set power-saver", "Switch to power-saver profile to preserve battery", 0.98, RiskLevel::Low, None, "Hardware"));
+        }
         return Some(sugs);
     }
 
-    // ASUS Keyboard Backlight & RGB (asusctl)
-    if lower == "keyboard light" || lower == "keyboard brightness" || lower == "keyboard backlight" || lower == "aura" || lower == "asus backlight" {
-        sugs.push(sug("asusctl -k med", "Set ASUS TUF keyboard brightness to medium", 0.98, RiskLevel::Low, None, "Hardware"));
-        sugs.push(sug("asusctl -k high", "Set ASUS TUF keyboard brightness to maximum", 0.95, RiskLevel::Low, None, "Hardware"));
-        sugs.push(sug("asusctl -k off", "Turn off ASUS TUF keyboard backlight", 0.92, RiskLevel::Low, None, "Hardware"));
-        return Some(sugs);
-    }
-
-    if lower == "keyboard rgb" || lower == "rgb mode" || lower == "aura mode" || lower == "rgb light" {
-        sugs.push(sug("asusctl led-mode static -c ffffff", "Set keyboard backlight to clean static white", 0.98, RiskLevel::Low, None, "Hardware"));
-        sugs.push(sug("asusctl led-mode breathe", "Set keyboard backlight to breathing animation", 0.94, RiskLevel::Low, None, "Hardware"));
-        sugs.push(sug("asusctl led-mode rainbow", "Set keyboard backlight to dynamic rainbow spectrum", 0.92, RiskLevel::Low, None, "Hardware"));
-        return Some(sugs);
-    }
-
-    // ASUS Fan / Power profiles
-    if lower == "fan turbo" || lower == "performance mode" || lower == "turbo fan" || lower == "asus turbo" {
-        sugs.push(sug("asusctl profile -P Performance", "Activate ASUS Performance/Turbo mode for maximum cooling & clocks", 0.98, RiskLevel::Low, None, "Hardware"));
-        return Some(sugs);
-    }
-    if lower == "fan quiet" || lower == "silent mode" || lower == "quiet mode" || lower == "fan silent" {
-        sugs.push(sug("asusctl profile -P Quiet", "Switch to Quiet/Silent power profile with reduced fan speeds", 0.98, RiskLevel::Low, None, "Hardware"));
-        return Some(sugs);
-    }
     if lower == "fan balanced" || lower == "balanced mode" || lower == "normal fan" {
-        sugs.push(sug("asusctl profile -P Balanced", "Switch to Balanced standard power and fan profile", 0.98, RiskLevel::Low, None, "Hardware"));
-        return Some(sugs);
-    }
-    if lower == "check fan" || lower == "fan mode" || lower == "power profile" || lower == "asus profile" {
-        sugs.push(sug("asusctl profile -p", "Display current active ASUS TUF fan and power profile", 0.98, RiskLevel::Low, None, "Hardware"));
-        return Some(sugs);
-    }
-
-    // ASUS Battery health & charge limit
-    if lower == "check battery" || lower == "battery status" || lower == "battery" {
-        sugs.push(sug("upower -i /org/freedesktop/UPower/devices/battery_BAT0", "Show detailed battery health, percentage, and discharge rate", 0.98, RiskLevel::Low, None, "Hardware"));
+        if ctx.has_asusctl {
+            sugs.push(sug("asusctl profile -P Balanced", "Switch to Balanced standard power and fan profile", 0.98, RiskLevel::Low, None, "Hardware"));
+        } else {
+            sugs.push(sug("powerprofilesctl set balanced", "Switch to balanced power profile", 0.98, RiskLevel::Low, None, "Hardware"));
+        }
         return Some(sugs);
     }
 
-    if lower == "battery limit" || lower == "charge limit" || lower == "battery charge" || lower == "asus charge" {
-        sugs.push(sug("asusctl -c 80", "Set battery charge limit to 80% to preserve battery lifespan", 0.98, RiskLevel::Low, None, "Hardware"));
-        sugs.push(sug("asusctl -c 100", "Allow battery to charge fully to 100%", 0.92, RiskLevel::Low, None, "Hardware"));
+    if lower == "check fan" || lower == "fan mode" || lower == "power profile" {
+        if ctx.has_asusctl {
+            sugs.push(sug("asusctl profile -p", "Display current active ASUS TUF fan and power profile", 0.98, RiskLevel::Low, None, "Hardware"));
+        } else {
+            sugs.push(sug("powerprofilesctl get", "Query current system power profile", 0.98, RiskLevel::Low, None, "Hardware"));
+        }
         return Some(sugs);
+    }
+
+    // Laptop Battery & Brightness
+    if ctx.form_factor == FormFactor::Laptop {
+        if lower == "check battery" || lower == "battery status" || lower == "battery" {
+            sugs.push(sug("upower -i /org/freedesktop/UPower/devices/battery_BAT0", "Show detailed battery health, percentage, and discharge rate", 0.98, RiskLevel::Low, None, "Hardware"));
+            sugs.push(sug("cat /sys/class/power_supply/BAT*/capacity", "Print battery charge level percentage directly", 0.92, RiskLevel::Low, None, "Hardware"));
+            return Some(sugs);
+        }
+        if lower == "battery limit" || lower == "charge limit" || lower == "battery charge" {
+            if ctx.has_asusctl {
+                sugs.push(sug("asusctl -c 80", "Set battery charge limit to 80% to preserve battery lifespan", 0.98, RiskLevel::Low, None, "Hardware"));
+                sugs.push(sug("asusctl -c 100", "Allow battery to charge fully to 100%", 0.92, RiskLevel::Low, None, "Hardware"));
+                return Some(sugs);
+            }
+        }
+        if lower == "brightness" || lower == "screen brightness" || lower == "brightness up" {
+            sugs.push(sug("brightnessctl set +10%", "Increase display brightness by 10% using brightnessctl", 0.98, RiskLevel::Low, None, "Hardware"));
+            sugs.push(sug("brightnessctl set 50%", "Set display brightness to 50%", 0.94, RiskLevel::Low, None, "Hardware"));
+            return Some(sugs);
+        }
+        if lower == "brightness down" || lower == "dim screen" {
+            sugs.push(sug("brightnessctl set 10%-", "Decrease display brightness by 10% using brightnessctl", 0.98, RiskLevel::Low, None, "Hardware"));
+            return Some(sugs);
+        }
     }
 
     // Sensors & Temps
@@ -651,34 +757,64 @@ fn match_hardware_and_laptop(lower: &str) -> Option<Vec<CandidateSuggestion>> {
         return Some(sugs);
     }
 
-    // Audio volume, PipeWire, sinks & mute
-    if lower == "restart audio" || lower == "fix audio" || lower == "reload audio" || lower == "pipewire restart" || lower == "restart sound" || matches_fuzzy(lower, "restart audio", 0.78) {
-        sugs.push(sug("systemctl --user restart pipewire pipewire-pulse wireplumber", "Restart PipeWire audio server and WirePlumber session manager", 0.99, RiskLevel::Low, None, "Audio"));
+    // Universal Audio (PipeWire / PulseAudio / ALSA)
+    if lower == "restart audio" || lower == "fix audio" || lower == "reload audio" || lower == "restart sound" || matches_fuzzy(lower, "restart audio", 0.78) {
+        let cmd = match ctx.audio_system {
+            AudioSystem::Pipewire => "systemctl --user restart pipewire pipewire-pulse wireplumber",
+            AudioSystem::Pulseaudio => "pulseaudio -k && pulseaudio --start",
+            AudioSystem::Alsa => "sudo alsactl restore",
+        };
+        sugs.push(sug(cmd, "Restart audio sound server and session manager", 0.99, RiskLevel::Low, None, "Audio"));
         return Some(sugs);
     }
 
-    if lower == "check audio" || lower == "audio status" || lower == "sound status" || lower == "audio devices" || lower == "sound devices" {
-        sugs.push(sug("wpctl status", "Show active PipeWire audio sinks, sources, and volume levels", 0.98, RiskLevel::Low, None, "Audio"));
+    if lower == "check audio" || lower == "audio status" || lower == "sound status" || lower == "audio devices" {
+        let cmd = match ctx.audio_system {
+            AudioSystem::Pipewire => "wpctl status",
+            AudioSystem::Pulseaudio => "pactl info",
+            AudioSystem::Alsa => "alsamixer",
+        };
+        sugs.push(sug(cmd, "Inspect active audio sinks, sources, and volume levels", 0.98, RiskLevel::Low, None, "Audio"));
         return Some(sugs);
     }
 
     if lower == "volume up" || lower == "increase volume" || lower == "louder" {
-        sugs.push(sug("wpctl set-volume @DEFAULT_AUDIO_SINK@ 5%+", "Increase system volume by 5%", 0.98, RiskLevel::Low, None, "Audio"));
+        let cmd = match ctx.audio_system {
+            AudioSystem::Pipewire => "wpctl set-volume @DEFAULT_AUDIO_SINK@ 5%+",
+            AudioSystem::Pulseaudio => "pactl set-sink-volume @DEFAULT_SINK@ +5%",
+            AudioSystem::Alsa => "amixer set Master 5%+",
+        };
+        sugs.push(sug(cmd, "Increase system audio volume by 5%", 0.98, RiskLevel::Low, None, "Audio"));
         return Some(sugs);
     }
 
     if lower == "volume down" || lower == "decrease volume" || lower == "quieter" {
-        sugs.push(sug("wpctl set-volume @DEFAULT_AUDIO_SINK@ 5%-", "Decrease system volume by 5%", 0.98, RiskLevel::Low, None, "Audio"));
+        let cmd = match ctx.audio_system {
+            AudioSystem::Pipewire => "wpctl set-volume @DEFAULT_AUDIO_SINK@ 5%-",
+            AudioSystem::Pulseaudio => "pactl set-sink-volume @DEFAULT_SINK@ -5%",
+            AudioSystem::Alsa => "amixer set Master 5%-",
+        };
+        sugs.push(sug(cmd, "Decrease system audio volume by 5%", 0.98, RiskLevel::Low, None, "Audio"));
         return Some(sugs);
     }
 
     if lower == "mute mic" || lower == "mute microphone" {
-        sugs.push(sug("wpctl set-mute @DEFAULT_AUDIO_SOURCE@ toggle", "Toggle microphone mute on default audio source", 0.98, RiskLevel::Low, None, "Audio"));
+        let cmd = match ctx.audio_system {
+            AudioSystem::Pipewire => "wpctl set-mute @DEFAULT_AUDIO_SOURCE@ toggle",
+            AudioSystem::Pulseaudio => "pactl set-source-mute @DEFAULT_SOURCE@ toggle",
+            AudioSystem::Alsa => "amixer set Capture toggle",
+        };
+        sugs.push(sug(cmd, "Toggle microphone mute on default audio input source", 0.98, RiskLevel::Low, None, "Audio"));
         return Some(sugs);
     }
 
     if lower == "mute audio" || lower == "mute sound" || lower == "mute volume" || lower == "mute" {
-        sugs.push(sug("wpctl set-mute @DEFAULT_AUDIO_SINK@ toggle", "Toggle audio playback mute on default output sink", 0.98, RiskLevel::Low, None, "Audio"));
+        let cmd = match ctx.audio_system {
+            AudioSystem::Pipewire => "wpctl set-mute @DEFAULT_AUDIO_SINK@ toggle",
+            AudioSystem::Pulseaudio => "pactl set-sink-mute @DEFAULT_SINK@ toggle",
+            AudioSystem::Alsa => "amixer set Master toggle",
+        };
+        sugs.push(sug(cmd, "Toggle audio playback mute on default output sink", 0.98, RiskLevel::Low, None, "Audio"));
         return Some(sugs);
     }
 
@@ -691,39 +827,51 @@ fn match_hardware_and_laptop(lower: &str) -> Option<Vec<CandidateSuggestion>> {
 }
 
 // -----------------------------------------------------------------------------
-// 11. Systemd & Service Management
+// 11. Services & System Administration (systemd / OpenRC / runit aware)
 // -----------------------------------------------------------------------------
-fn match_systemd_and_services(lower: &str) -> Option<Vec<CandidateSuggestion>> {
+fn match_services_and_init(lower: &str, ctx: &SystemContext) -> Option<Vec<CandidateSuggestion>> {
     let mut sugs = Vec::new();
+    let is_systemd = ctx.init_system == InitSystem::Systemd;
 
     // Bluetooth
     if lower == "restart bluetooth" || matches_fuzzy(lower, "restart bluetooth", 0.8) {
-        sugs.push(sug("sudo systemctl restart bluetooth", "Restart the Bluetooth hardware daemon", 0.98, RiskLevel::Medium, None, "Systemd"));
+        let cmd = if is_systemd { "sudo systemctl restart bluetooth" } else { "sudo rc-service bluetooth restart" };
+        sugs.push(sug(cmd, "Restart the Bluetooth hardware daemon", 0.98, RiskLevel::Medium, None, "System"));
         return Some(sugs);
     }
     if lower == "check bluetooth" || lower == "bluetooth status" || matches_fuzzy(lower, "status bluetooth", 0.8) {
-        sugs.push(sug("systemctl status bluetooth", "Inspect Bluetooth service operational status", 0.98, RiskLevel::Low, None, "Systemd"));
+        let cmd = if is_systemd { "systemctl status bluetooth" } else { "sudo rc-service bluetooth status" };
+        sugs.push(sug(cmd, "Inspect Bluetooth service operational status", 0.98, RiskLevel::Low, None, "System"));
         return Some(sugs);
     }
 
     // Failed services
     if lower == "failed services" || lower == "check failed" || lower == "systemctl failed" {
-        sugs.push(sug("systemctl --failed", "List all systemd system services that failed to start", 0.99, RiskLevel::Low, None, "Systemd"));
-        sugs.push(sug("systemctl --user --failed", "List failed user session services", 0.94, RiskLevel::Low, None, "Systemd"));
-        return Some(sugs);
+        if is_systemd {
+            sugs.push(sug("systemctl --failed", "List all systemd system services that failed to start", 0.99, RiskLevel::Low, None, "System"));
+            sugs.push(sug("systemctl --user --failed", "List failed user session services", 0.94, RiskLevel::Low, None, "System"));
+            return Some(sugs);
+        }
     }
 
     // System logs
     if lower == "system logs" || lower == "check logs" || lower == "error logs" || lower == "journal" {
-        sugs.push(sug("journalctl -xe", "Inspect latest system log entries with explanatory error catalog", 0.98, RiskLevel::Low, None, "Systemd"));
-        return Some(sugs);
+        if is_systemd {
+            sugs.push(sug("journalctl -xe", "Inspect latest system log entries with explanatory error catalog", 0.98, RiskLevel::Low, None, "System"));
+            return Some(sugs);
+        } else {
+            sugs.push(sug("tail -n 50 /var/log/messages", "Inspect recent system log entries", 0.98, RiskLevel::Low, None, "System"));
+            return Some(sugs);
+        }
     }
     if lower == "boot logs" || lower == "check boot" {
-        sugs.push(sug("journalctl -b", "View journal logs recorded during the current system boot", 0.98, RiskLevel::Low, None, "Systemd"));
-        return Some(sugs);
+        if is_systemd {
+            sugs.push(sug("journalctl -b", "View journal logs recorded during the current system boot", 0.98, RiskLevel::Low, None, "System"));
+            return Some(sugs);
+        }
     }
     if lower == "kernel logs" || lower == "dmesg" {
-        sugs.push(sug("sudo dmesg -T | tail -n 50", "Inspect 50 most recent human-readable Linux kernel ring buffer logs", 0.98, RiskLevel::Low, None, "Systemd"));
+        sugs.push(sug("sudo dmesg -T | tail -n 50", "Inspect 50 most recent human-readable Linux kernel ring buffer logs", 0.98, RiskLevel::Low, None, "System"));
         return Some(sugs);
     }
 
@@ -732,37 +880,43 @@ fn match_systemd_and_services(lower: &str) -> Option<Vec<CandidateSuggestion>> {
     if let Some(caps) = service_regex.captures(lower) {
         let action = &caps[1];
         let service = &caps[2];
-        let is_user = service == "pipewire" || service == "wireplumber" || service == "pipewire-pulse";
-        let (cmd, risk) = match action {
-            "status" => (
-                if is_user { format!("systemctl --user status {}", service) } else { format!("systemctl status {}", service) },
-                RiskLevel::Low,
-            ),
-            "restart" => (
-                if is_user { format!("systemctl --user restart {}", service) } else { format!("sudo systemctl restart {}", service) },
-                RiskLevel::Medium,
-            ),
-            "start" => (
-                if is_user { format!("systemctl --user start {}", service) } else { format!("sudo systemctl start {}", service) },
-                RiskLevel::Medium,
-            ),
-            "stop" => (
-                if is_user { format!("systemctl --user stop {}", service) } else { format!("sudo systemctl stop {}", service) },
-                RiskLevel::Medium,
-            ),
-            "enable" => (
-                format!("sudo systemctl enable --now {}", service),
-                RiskLevel::Medium,
-            ),
-            "disable" => (
-                format!("sudo systemctl disable {}", service),
-                RiskLevel::Destructive,
-            ),
-            _ => return None,
-        };
 
-        sugs.push(sug(&cmd, &format!("Execute systemd '{}' on service '{}'", action, service), 0.97, risk, None, "Systemd"));
-        return Some(sugs);
+        if is_systemd {
+            let is_user = service == "pipewire" || service == "wireplumber" || service == "pipewire-pulse";
+            let (cmd, risk) = match action {
+                "status" => (
+                    if is_user { format!("systemctl --user status {}", service) } else { format!("systemctl status {}", service) },
+                    RiskLevel::Low,
+                ),
+                "restart" => (
+                    if is_user { format!("systemctl --user restart {}", service) } else { format!("sudo systemctl restart {}", service) },
+                    RiskLevel::Medium,
+                ),
+                "start" => (
+                    if is_user { format!("systemctl --user start {}", service) } else { format!("sudo systemctl start {}", service) },
+                    RiskLevel::Medium,
+                ),
+                "stop" => (
+                    if is_user { format!("systemctl --user stop {}", service) } else { format!("sudo systemctl stop {}", service) },
+                    RiskLevel::Medium,
+                ),
+                "enable" => (
+                    format!("sudo systemctl enable --now {}", service),
+                    RiskLevel::Medium,
+                ),
+                "disable" => (
+                    format!("sudo systemctl disable {}", service),
+                    RiskLevel::Destructive,
+                ),
+                _ => return None,
+            };
+            sugs.push(sug(&cmd, &format!("Execute systemd '{}' on service '{}'", action, service), 0.97, risk, None, "System"));
+            return Some(sugs);
+        } else if ctx.init_system == InitSystem::OpenRc {
+            let cmd = format!("sudo rc-service {} {}", service, action);
+            sugs.push(sug(&cmd, &format!("Execute OpenRC '{}' on service '{}'", action, service), 0.97, RiskLevel::Medium, None, "System"));
+            return Some(sugs);
+        }
     }
 
     None
@@ -943,69 +1097,138 @@ fn match_processes_and_performance(lower: &str) -> Option<Vec<CandidateSuggestio
 }
 
 // -----------------------------------------------------------------------------
-// 15. Hyprland & Wayland Desktop Controls
+// 15. Desktop Environment & Window Manager (Hyprland, Sway, GNOME, KDE, X11)
 // -----------------------------------------------------------------------------
-fn match_hyprland_and_desktop(lower: &str) -> Option<Vec<CandidateSuggestion>> {
+fn match_desktop_and_window_manager(lower: &str, ctx: &SystemContext) -> Option<Vec<CandidateSuggestion>> {
     let mut sugs = Vec::new();
 
-    if lower == "reload hyprland" || lower == "reload config" || lower == "hyprland reload" {
-        sugs.push(sug("hyprctl reload", "Reload Hyprland compositor configuration live without exiting", 0.99, RiskLevel::Low, None, "Hyprland"));
+    // Reload compositor / window manager
+    if lower == "reload hyprland" || lower == "reload desktop" || lower == "reload wm" || lower == "hyprland reload" {
+        match &ctx.display_server {
+            DisplayServer::Wayland(wm) if wm == "hyprland" => {
+                sugs.push(sug("hyprctl reload", "Reload Hyprland compositor configuration live without exiting", 0.99, RiskLevel::Low, None, "Desktop"));
+            }
+            DisplayServer::Wayland(wm) if wm == "sway" => {
+                sugs.push(sug("swaymsg reload", "Reload Sway compositor configuration live", 0.99, RiskLevel::Low, None, "Desktop"));
+            }
+            _ => {
+                sugs.push(sug("hyprctl reload || swaymsg reload", "Reload active Wayland compositor configuration", 0.95, RiskLevel::Low, None, "Desktop"));
+            }
+        }
         return Some(sugs);
     }
 
-    if lower == "list windows" || lower == "show windows" || lower == "hyprland clients" || lower == "open windows" {
-        sugs.push(sug("hyprctl clients", "List all open Wayland windows, workspaces, and window classes", 0.98, RiskLevel::Low, None, "Hyprland"));
+    // List windows
+    if lower == "list windows" || lower == "show windows" || lower == "open windows" || lower == "hyprland clients" {
+        match &ctx.display_server {
+            DisplayServer::Wayland(wm) if wm == "hyprland" => {
+                sugs.push(sug("hyprctl clients", "List all open Wayland windows, workspaces, and classes in Hyprland", 0.98, RiskLevel::Low, None, "Desktop"));
+            }
+            DisplayServer::Wayland(wm) if wm == "sway" => {
+                sugs.push(sug("swaymsg -t get_tree", "List all open Sway desktop windows and containers", 0.98, RiskLevel::Low, None, "Desktop"));
+            }
+            DisplayServer::X11 => {
+                sugs.push(sug("wmctrl -l", "List all active X11 windows", 0.98, RiskLevel::Low, None, "Desktop"));
+            }
+            _ => {
+                sugs.push(sug("hyprctl clients", "List open windows and workspaces", 0.90, RiskLevel::Low, None, "Desktop"));
+            }
+        }
         return Some(sugs);
     }
 
+    // Active window
     if lower == "active window" || lower == "current window" {
-        sugs.push(sug("hyprctl activewindow", "Inspect title, PID, and address of the currently focused window", 0.98, RiskLevel::Low, None, "Hyprland"));
+        if let DisplayServer::Wayland(wm) = &ctx.display_server {
+            if wm == "hyprland" {
+                sugs.push(sug("hyprctl activewindow", "Inspect title, PID, and address of currently focused window", 0.98, RiskLevel::Low, None, "Desktop"));
+                return Some(sugs);
+            }
+        }
+        sugs.push(sug("hyprctl activewindow || xdotool getwindowfocus getwindowname", "Display active window details", 0.92, RiskLevel::Low, None, "Desktop"));
         return Some(sugs);
     }
 
+    // Kill window
     if lower == "kill window" || lower == "force quit" || lower == "force kill" {
-        sugs.push(sug("hyprctl kill", "Click on any Wayland window to forcefully kill its process", 0.98, RiskLevel::Medium, None, "Hyprland"));
+        if let DisplayServer::Wayland(wm) = &ctx.display_server {
+            if wm == "hyprland" {
+                sugs.push(sug("hyprctl kill", "Click on any Wayland window to forcefully kill its process", 0.98, RiskLevel::Medium, None, "Desktop"));
+                return Some(sugs);
+            }
+        }
+        sugs.push(sug("xkill || hyprctl kill", "Force kill target window by clicking on it", 0.95, RiskLevel::Medium, None, "Desktop"));
         return Some(sugs);
     }
 
+    // Monitors / Displays
     if lower == "list monitors" || lower == "check monitors" || lower == "displays" || lower == "monitors" {
-        sugs.push(sug("hyprctl monitors", "Display connected monitors, active resolutions, scaling, and refresh rates", 0.98, RiskLevel::Low, None, "Hyprland"));
+        match &ctx.display_server {
+            DisplayServer::Wayland(wm) if wm == "hyprland" => {
+                sugs.push(sug("hyprctl monitors", "Display connected monitors, active resolutions, scaling, and refresh rates", 0.98, RiskLevel::Low, None, "Desktop"));
+            }
+            DisplayServer::Wayland(wm) if wm == "sway" => {
+                sugs.push(sug("swaymsg -t get_outputs", "Display connected Sway display outputs", 0.98, RiskLevel::Low, None, "Desktop"));
+            }
+            DisplayServer::X11 => {
+                sugs.push(sug("xrandr --query", "Query connected displays and supported resolutions via xrandr", 0.98, RiskLevel::Low, None, "Desktop"));
+            }
+            _ => {
+                sugs.push(sug("hyprctl monitors || xrandr --query", "Inspect connected displays and screen resolutions", 0.92, RiskLevel::Low, None, "Desktop"));
+            }
+        }
         return Some(sugs);
     }
 
-    if lower == "restart quickshell" || lower == "restart shell" || lower == "reload quickshell" {
-        sugs.push(sug("killall quickshell; quickshell &", "Restart Quickshell / Caelestia desktop shell in background", 0.98, RiskLevel::Medium, None, "Desktop"));
-        return Some(sugs);
-    }
-
-    if lower == "restart waybar" || lower == "reload waybar" {
-        sugs.push(sug("killall waybar; waybar &", "Restart Waybar status bar in background", 0.98, RiskLevel::Medium, None, "Desktop"));
-        return Some(sugs);
-    }
-
+    // Screenshots
     if lower == "screenshot" || lower == "take screenshot" || lower == "screen capture" {
-        sugs.push(sug("grim -g \"$(slurp)\" ~/Pictures/screenshot_(date +%Y%m%d_%H%M%S).png", "Select a screen region and save screenshot to Pictures folder", 0.98, RiskLevel::Low, None, "Desktop"));
-        sugs.push(sug("hyprshot -m region", "Interactive Hyprland region screenshot tool", 0.93, RiskLevel::Low, None, "Desktop"));
+        match &ctx.display_server {
+            DisplayServer::Wayland(_) => {
+                sugs.push(sug("grim -g \"$(slurp)\" ~/Pictures/screenshot_(date +%Y%m%d_%H%M%S).png", "Select a screen region and save screenshot to Pictures folder", 0.98, RiskLevel::Low, None, "Desktop"));
+                sugs.push(sug("hyprshot -m region", "Interactive Wayland region screenshot tool", 0.93, RiskLevel::Low, None, "Desktop"));
+            }
+            DisplayServer::X11 => {
+                sugs.push(sug("scrot -s ~/Pictures/screenshot_%Y%m%d_%H%M%S.png", "Select a screen region and save screenshot via scrot", 0.98, RiskLevel::Low, None, "Desktop"));
+            }
+            _ => {
+                sugs.push(sug("grim -g \"$(slurp)\" ~/Pictures/screenshot_(date +%Y%m%d_%H%M%S).png", "Take region screenshot", 0.90, RiskLevel::Low, None, "Desktop"));
+            }
+        }
         return Some(sugs);
     }
 
+    // Screen recording
     if lower == "screen record" || lower == "record screen" || lower == "record desktop" {
-        sugs.push(sug("wf-recorder -g \"$(slurp)\" -f ~/Videos/recording_(date +%Y%m%d_%H%M%S).mp4", "Select region and record desktop video using wf-recorder", 0.98, RiskLevel::Low, None, "Desktop"));
-        return Some(sugs);
+        if matches!(ctx.display_server, DisplayServer::Wayland(_)) {
+            sugs.push(sug("wf-recorder -g \"$(slurp)\" -f ~/Videos/recording_(date +%Y%m%d_%H%M%S).mp4", "Select region and record desktop video using wf-recorder", 0.98, RiskLevel::Low, None, "Desktop"));
+            return Some(sugs);
+        }
     }
 
+    // Clipboard history
     if lower == "clipboard history" || lower == "cliphist" || lower == "clipboard" {
-        sugs.push(sug("cliphist list | rofi -dmenu | cliphist decode | wl-copy", "Search clipboard history with rofi and copy selection to clipboard", 0.98, RiskLevel::Low, None, "Desktop"));
+        match &ctx.display_server {
+            DisplayServer::Wayland(_) => {
+                sugs.push(sug("cliphist list | rofi -dmenu | cliphist decode | wl-copy", "Search clipboard history with rofi and copy selection to clipboard", 0.98, RiskLevel::Low, None, "Desktop"));
+                sugs.push(sug("wl-paste", "Output current Wayland clipboard text to stdout", 0.92, RiskLevel::Low, None, "Desktop"));
+            }
+            DisplayServer::X11 => {
+                sugs.push(sug("xclip -selection clipboard -o", "Print current X11 clipboard contents to stdout", 0.98, RiskLevel::Low, None, "Desktop"));
+            }
+            _ => {
+                sugs.push(sug("wl-paste || xclip -selection clipboard -o", "Read clipboard contents", 0.90, RiskLevel::Low, None, "Desktop"));
+            }
+        }
         return Some(sugs);
     }
 
     if lower == "paste clipboard" || lower == "paste" {
-        sugs.push(sug("wl-paste", "Output current Wayland clipboard text to stdout", 0.98, RiskLevel::Low, None, "Desktop"));
-        return Some(sugs);
-    }
-
-    if lower == "hyprland version" {
-        sugs.push(sug("hyprctl version", "Show Hyprland build version and compile flags", 0.98, RiskLevel::Low, None, "Hyprland"));
+        let cmd = match &ctx.display_server {
+            DisplayServer::Wayland(_) => "wl-paste",
+            DisplayServer::X11 => "xclip -selection clipboard -o",
+            _ => "wl-paste",
+        };
+        sugs.push(sug(cmd, "Output current clipboard text to stdout", 0.98, RiskLevel::Low, None, "Desktop"));
         return Some(sugs);
     }
 
@@ -1013,7 +1236,7 @@ fn match_hyprland_and_desktop(lower: &str) -> Option<Vec<CandidateSuggestion>> {
 }
 
 // -----------------------------------------------------------------------------
-// 16. Btrfs & CachyOS Administration
+// 16. Distro-Specific Extras (Btrfs, Snapper, CachyOS)
 // -----------------------------------------------------------------------------
 fn match_btrfs_and_cachyos(lower: &str) -> Option<Vec<CandidateSuggestion>> {
     let mut sugs = Vec::new();
@@ -1040,9 +1263,16 @@ fn match_btrfs_and_cachyos(lower: &str) -> Option<Vec<CandidateSuggestion>> {
         return Some(sugs);
     }
 
-    if lower == "kernel info" || lower == "cachyos kernel" || lower == "check kernel" {
-        sugs.push(sug("uname -r", "Display running Linux kernel release and CachyOS architecture variant", 0.98, RiskLevel::Low, None, "System"));
-        sugs.push(sug("cachyos-kernel-manager", "Open CachyOS graphical kernel manager utility", 0.92, RiskLevel::Low, None, "System"));
+    if lower == "cachyos hello" {
+        sugs.push(sug("cachyos-hello", "Open CachyOS Welcome assistant application", 0.98, RiskLevel::Low, None, "CachyOS"));
+        return Some(sugs);
+    }
+    if lower == "cachyos kernel" || lower == "kernel manager" {
+        sugs.push(sug("cachyos-kernel-manager", "Open CachyOS graphical kernel manager utility", 0.98, RiskLevel::Low, None, "CachyOS"));
+        return Some(sugs);
+    }
+    if lower == "cachyos package installer" || lower == "cachyos software" {
+        sugs.push(sug("cachyos-packageinstaller", "Launch graphical CachyOS package installer", 0.98, RiskLevel::Low, None, "CachyOS"));
         return Some(sugs);
     }
 
@@ -1050,7 +1280,7 @@ fn match_btrfs_and_cachyos(lower: &str) -> Option<Vec<CandidateSuggestion>> {
 }
 
 // -----------------------------------------------------------------------------
-// Helper parsers & lookups
+// Helper parsers & universal lookups
 // -----------------------------------------------------------------------------
 fn parse_install_intent(lower: &str) -> Option<String> {
     let tokens: Vec<&str> = lower.split_whitespace().collect();
@@ -1110,196 +1340,135 @@ fn parse_find_package_intent(lower: &str) -> Option<String> {
     Some(pkg_tokens.join(" "))
 }
 
-const POPULAR_PACKAGES: &[(&str, &str, &str, &str)] = &[
-    // (fuzzy_key, binary_pkg, description, category)
-    // Web Browsers
-    ("chrome", "google-chrome", "Google Chrome web browser", "AUR"),
-    ("google chrome", "google-chrome", "Google Chrome web browser", "AUR"),
-    ("chromium", "chromium", "Chromium open-source web browser", "Pacman"),
-    ("firefox", "firefox", "Mozilla Firefox web browser", "Pacman"),
-    ("brave", "brave-bin", "Brave privacy web browser", "AUR"),
-    ("brave browser", "brave-bin", "Brave privacy web browser", "AUR"),
-    ("vivaldi", "vivaldi", "Vivaldi feature-rich web browser", "Pacman"),
-    ("zen", "zen-browser-bin", "Zen modern privacy browser", "AUR"),
-    ("zen browser", "zen-browser-bin", "Zen modern privacy browser", "AUR"),
-    ("thorium", "thorium-browser-bin", "Thorium high-performance Chromium browser", "AUR"),
-    ("tor", "tor-browser-bin", "Tor Browser anonymity network client", "AUR"),
-    ("tor browser", "tor-browser-bin", "Tor Browser anonymity network client", "AUR"),
-    ("librewolf", "librewolf-bin", "LibreWolf hardened Firefox browser", "AUR"),
-    ("edge", "microsoft-edge-stable-bin", "Microsoft Edge web browser", "AUR"),
+// Universal package cross-distro mapping
+struct UniversalPackage {
+    key: &'static str,
+    arch_pkg: &'static str,
+    debian_pkg: &'static str,
+    fedora_pkg: &'static str,
+    desc: &'static str,
+    is_aur: bool,
+}
+
+const UNIVERSAL_PACKAGES: &[UniversalPackage] = &[
+    // Browsers
+    UniversalPackage { key: "chrome", arch_pkg: "google-chrome", debian_pkg: "google-chrome-stable", fedora_pkg: "google-chrome-stable", desc: "Google Chrome web browser", is_aur: true },
+    UniversalPackage { key: "google chrome", arch_pkg: "google-chrome", debian_pkg: "google-chrome-stable", fedora_pkg: "google-chrome-stable", desc: "Google Chrome web browser", is_aur: true },
+    UniversalPackage { key: "chromium", arch_pkg: "chromium", debian_pkg: "chromium-browser", fedora_pkg: "chromium", desc: "Chromium open-source web browser", is_aur: false },
+    UniversalPackage { key: "firefox", arch_pkg: "firefox", debian_pkg: "firefox", fedora_pkg: "firefox", desc: "Mozilla Firefox web browser", is_aur: false },
+    UniversalPackage { key: "brave", arch_pkg: "brave-bin", debian_pkg: "brave-browser", fedora_pkg: "brave-browser", desc: "Brave privacy web browser", is_aur: true },
+    UniversalPackage { key: "brave browser", arch_pkg: "brave-bin", debian_pkg: "brave-browser", fedora_pkg: "brave-browser", desc: "Brave privacy web browser", is_aur: true },
+    UniversalPackage { key: "zen", arch_pkg: "zen-browser-bin", debian_pkg: "flatpak install flathub io.github.zen_browser.zen", fedora_pkg: "flatpak install flathub io.github.zen_browser.zen", desc: "Zen modern privacy browser", is_aur: true },
 
     // Development & IDEs
-    ("visual studio code", "visual-studio-code-bin", "Visual Studio Code proprietary binary", "AUR"),
-    ("vscode", "code", "Visual Studio Code (OSS build)", "Pacman"),
-    ("code", "code", "Visual Studio Code (OSS build)", "Pacman"),
-    ("vscodium", "vscodium-bin", "VSCodium telemetry-free VS Code", "AUR"),
-    ("codium", "vscodium-bin", "VSCodium telemetry-free VS Code", "AUR"),
-    ("zed", "zed", "Zed high-performance multi-threaded code editor", "Pacman"),
-    ("zed editor", "zed", "Zed high-performance code editor", "Pacman"),
-    ("neovim", "neovim", "Vim-fork focused on extensibility and usability", "Pacman"),
-    ("nvim", "neovim", "Vim-fork text editor", "Pacman"),
-    ("emacs", "emacs", "Extensible, customizable GNU text editor", "Pacman"),
-    ("sublime", "sublime-text-4", "Sublime Text sophisticated code editor", "AUR"),
-    ("sublime text", "sublime-text-4", "Sublime Text editor", "AUR"),
-    ("intellij", "intellij-idea-community-edition", "IntelliJ IDEA Community Edition", "Pacman"),
-    ("pycharm", "pycharm-community-edition", "PyCharm Community Python IDE", "Pacman"),
-    ("clion", "clion", "CLion C/C++ cross-platform IDE", "AUR"),
-    ("android studio", "android-studio", "Official Android IDE based on IntelliJ", "AUR"),
-    ("postman", "postman-bin", "Postman API development and testing platform", "AUR"),
-    ("insomnia", "insomnia-bin", "Insomnia REST and GraphQL API client", "AUR"),
-    ("dbeaver", "dbeaver", "Universal database manager and SQL client", "Pacman"),
-    ("beekeeper", "beekeeper-studio-bin", "Beekeeper Studio intuitive SQL editor", "AUR"),
+    UniversalPackage { key: "vscode", arch_pkg: "code", debian_pkg: "code", fedora_pkg: "code", desc: "Visual Studio Code editor", is_aur: false },
+    UniversalPackage { key: "code", arch_pkg: "code", debian_pkg: "code", fedora_pkg: "code", desc: "Visual Studio Code editor", is_aur: false },
+    UniversalPackage { key: "visual studio code", arch_pkg: "visual-studio-code-bin", debian_pkg: "code", fedora_pkg: "code", desc: "Visual Studio Code proprietary binary", is_aur: true },
+    UniversalPackage { key: "vscodium", arch_pkg: "vscodium-bin", debian_pkg: "codium", fedora_pkg: "codium", desc: "VSCodium telemetry-free VS Code", is_aur: true },
+    UniversalPackage { key: "zed", arch_pkg: "zed", debian_pkg: "flatpak install flathub dev.zed.Zed", fedora_pkg: "zed", desc: "Zed high-performance code editor", is_aur: false },
+    UniversalPackage { key: "neovim", arch_pkg: "neovim", debian_pkg: "neovim", fedora_pkg: "neovim", desc: "Vim-fork focused on extensibility", is_aur: false },
+    UniversalPackage { key: "nvim", arch_pkg: "neovim", debian_pkg: "neovim", fedora_pkg: "neovim", desc: "Vim-fork text editor", is_aur: false },
+    UniversalPackage { key: "emacs", arch_pkg: "emacs", debian_pkg: "emacs", fedora_pkg: "emacs", desc: "Extensible GNU text editor", is_aur: false },
+    UniversalPackage { key: "build essential", arch_pkg: "base-devel", debian_pkg: "build-essential", fedora_pkg: "groupinstall \"Development Tools\"", desc: "Base compilation toolchain and compilers", is_aur: false },
+    UniversalPackage { key: "docker", arch_pkg: "docker docker-compose", debian_pkg: "docker.io docker-compose", fedora_pkg: "docker docker-compose", desc: "Docker containerization engine and compose", is_aur: false },
 
-    // Terminals, Shell & Utilities
-    ("wezterm", "wezterm-git", "WezTerm GPU-accelerated terminal emulator", "AUR"),
-    ("alacritty", "alacritty", "Cross-platform, GPU-accelerated terminal emulator", "Pacman"),
-    ("kitty", "kitty", "Modern, hackable, GPU-based terminal emulator", "Pacman"),
-    ("foot", "foot", "Fast, lightweight Wayland terminal emulator", "Pacman"),
-    ("ghostty", "ghostty", "Ghostty fast native terminal emulator", "AUR"),
-    ("tmux", "tmux", "Terminal multiplexer", "Pacman"),
-    ("zellij", "zellij", "Zellij modern terminal workspace and multiplexer", "Pacman"),
-    ("zsh", "zsh", "Z shell command interpreter", "Pacman"),
-    ("starship", "starship", "Cross-shell customizable prompt", "Pacman"),
-    ("zoxide", "zoxide", "Smarter cd command for rapid navigation", "Pacman"),
-    ("fzf", "fzf", "Command-line fuzzy finder", "Pacman"),
-    ("ripgrep", "ripgrep", "Line-oriented fast regex search tool", "Pacman"),
-    ("rg", "ripgrep", "Fast regex file searcher", "Pacman"),
-    ("fd", "fd", "Simple, fast alternative to find", "Pacman"),
-    ("bat", "bat", "Cat clone with syntax highlighting and Git integration", "Pacman"),
-    ("eza", "eza", "Modern, maintained replacement for ls", "Pacman"),
-    ("yazi", "yazi", "Blazing-fast terminal file manager written in Rust", "Pacman"),
-    ("ranger", "ranger", "Vim-inspired console file manager", "Pacman"),
-    ("lazygit", "lazygit", "Simple terminal UI for git commands", "Pacman"),
-    ("lazydocker", "lazydocker-bin", "Terminal UI for docker and docker-compose", "AUR"),
-    ("fastfetch", "fastfetch", "Fast system information display tool", "Pacman"),
-    ("btop", "btop", "Resource monitor that shows usage and stats", "Pacman"),
-    ("htop", "htop", "Interactive process viewer", "Pacman"),
-    ("procs", "procs", "Modern replacement for ps written in Rust", "Pacman"),
-    ("duf", "duf", "Disk Usage/Free Utility with colorful output", "Pacman"),
-    ("dust", "dust", "du alternative with intuitive visual graphs", "Pacman"),
-    ("tldr", "tealdeer", "Fast tldr client for simplified man pages", "Pacman"),
-    ("jq", "jq", "Command-line JSON processor", "Pacman"),
-    ("gh", "github-cli", "GitHub official command-line interface", "Pacman"),
+    // Languages
+    UniversalPackage { key: "rust", arch_pkg: "rustup", debian_pkg: "rustup || curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh", fedora_pkg: "rustup", desc: "Rust toolchain installer and compiler", is_aur: false },
+    UniversalPackage { key: "node", arch_pkg: "nodejs npm", debian_pkg: "nodejs npm", fedora_pkg: "nodejs npm", desc: "Node.js JavaScript runtime and npm", is_aur: false },
+    UniversalPackage { key: "python", arch_pkg: "python python-pip", debian_pkg: "python3 python3-pip python3-venv", fedora_pkg: "python3 python3-pip", desc: "Python programming language and pip", is_aur: false },
+    UniversalPackage { key: "go", arch_pkg: "go", debian_pkg: "golang-go", fedora_pkg: "golang", desc: "Go programming language compiler", is_aur: false },
 
-    // Languages, Runtimes & Containers
-    ("docker", "docker docker-compose", "Docker containerization engine and compose", "Pacman"),
-    ("podman", "podman", "Daemonless container engine for OCI containers", "Pacman"),
-    ("rust", "rustup", "Rust toolchain installer and version manager", "Pacman"),
-    ("cargo", "rustup", "Rust package manager and compiler", "Pacman"),
-    ("node", "nodejs npm", "Node.js JavaScript runtime and npm", "Pacman"),
-    ("nodejs", "nodejs npm", "Node.js JavaScript runtime", "Pacman"),
-    ("pnpm", "pnpm", "Fast, disk space efficient package manager", "Pacman"),
-    ("bun", "bun-bin", "Incredibly fast JavaScript all-in-one toolkit", "AUR"),
-    ("yarn", "yarn", "Fast, reliable dependency management for Node", "Pacman"),
-    ("python", "python python-pip", "Python programming language and pip", "Pacman"),
-    ("go", "go", "Go programming language compiler and tools", "Pacman"),
-    ("golang", "go", "Go programming language compiler", "Pacman"),
-    ("build essential", "base-devel", "Basic Arch compilation tools and compilers", "Pacman"),
-    ("gcc", "gcc", "GNU Compiler Collection C/C++", "Pacman"),
-    ("clang", "clang", "C language family frontend for LLVM", "Pacman"),
-    ("cmake", "cmake", "Cross-platform build system generator", "Pacman"),
-    ("ninja", "ninja", "Small build system with focus on speed", "Pacman"),
-    ("kubectl", "kubectl", "Kubernetes cluster command-line control tool", "Pacman"),
-    ("k9s", "k9s", "Kubernetes CLI management dashboard", "Pacman"),
-    ("helm", "helm", "Kubernetes package manager", "Pacman"),
+    // CLI Tools
+    UniversalPackage { key: "git", arch_pkg: "git", debian_pkg: "git", fedora_pkg: "git", desc: "Git version control system", is_aur: false },
+    UniversalPackage { key: "curl", arch_pkg: "curl", debian_pkg: "curl", fedora_pkg: "curl", desc: "Command line data transfer tool", is_aur: false },
+    UniversalPackage { key: "ripgrep", arch_pkg: "ripgrep", debian_pkg: "ripgrep", fedora_pkg: "ripgrep", desc: "Fast line-oriented search tool", is_aur: false },
+    UniversalPackage { key: "fd", arch_pkg: "fd", debian_pkg: "fd-find", fedora_pkg: "fd-find", desc: "Simple and fast alternative to find", is_aur: false },
+    UniversalPackage { key: "bat", arch_pkg: "bat", debian_pkg: "bat", fedora_pkg: "bat", desc: "Cat clone with syntax highlighting", is_aur: false },
+    UniversalPackage { key: "eza", arch_pkg: "eza", debian_pkg: "eza", fedora_pkg: "eza", desc: "Modern, maintained replacement for ls", is_aur: false },
+    UniversalPackage { key: "yazi", arch_pkg: "yazi", debian_pkg: "cargo install yazi-fm yazi-cli", fedora_pkg: "yazi", desc: "Blazing-fast terminal file manager", is_aur: false },
+    UniversalPackage { key: "btop", arch_pkg: "btop", debian_pkg: "btop", fedora_pkg: "btop", desc: "Resource monitor that shows usage and stats", is_aur: false },
+    UniversalPackage { key: "htop", arch_pkg: "htop", debian_pkg: "htop", fedora_pkg: "htop", desc: "Interactive process viewer", is_aur: false },
+    UniversalPackage { key: "fastfetch", arch_pkg: "fastfetch", debian_pkg: "fastfetch", fedora_pkg: "fastfetch", desc: "Fast system information display tool", is_aur: false },
+    UniversalPackage { key: "tmux", arch_pkg: "tmux", debian_pkg: "tmux", fedora_pkg: "tmux", desc: "Terminal multiplexer", is_aur: false },
+    UniversalPackage { key: "fzf", arch_pkg: "fzf", debian_pkg: "fzf", fedora_pkg: "fzf", desc: "Command-line fuzzy finder", is_aur: false },
 
-    // Gaming & Hardware
-    ("steam", "steam", "Valve Steam gaming platform", "Pacman"),
-    ("lutris", "lutris", "Open gaming platform for Linux", "Pacman"),
-    ("heroic", "heroic-games-launcher-bin", "Heroic Games Launcher (Epic & GOG)", "AUR"),
-    ("bottles", "bottles", "Wine prefix manager for software and gaming", "Pacman"),
-    ("protonup", "protonup-qt-bin", "GE-Proton and Wine tool installer GUI", "AUR"),
-    ("mangohud", "mangohud", "Vulkan and OpenGL gaming overlay for monitoring FPS/temps", "Pacman"),
-    ("gamemode", "gamemode", "Feral GameMode Linux system performance optimizer", "Pacman"),
-    ("goverlay", "goverlay", "GUI to configure Vulkan/OpenGL gaming overlays", "Pacman"),
-    ("corectrl", "corectrl", "Hardware control and overclocking profile tool", "Pacman"),
-    ("supergfxctl", "supergfxctl", "ASUS hybrid graphics mode switcher", "Pacman"),
-    ("asusctl", "asusctl", "ASUS ROG/TUF laptop control utility", "Pacman"),
+    // Gaming & Media
+    UniversalPackage { key: "steam", arch_pkg: "steam", debian_pkg: "steam", fedora_pkg: "steam", desc: "Valve Steam gaming platform", is_aur: false },
+    UniversalPackage { key: "lutris", arch_pkg: "lutris", debian_pkg: "lutris", fedora_pkg: "lutris", desc: "Open gaming platform for Linux", is_aur: false },
+    UniversalPackage { key: "spotify", arch_pkg: "spotify", debian_pkg: "flatpak install flathub com.spotify.Client", fedora_pkg: "flatpak install flathub com.spotify.Client", desc: "Spotify music streaming client", is_aur: true },
+    UniversalPackage { key: "discord", arch_pkg: "discord", debian_pkg: "discord", fedora_pkg: "discord", desc: "Discord voice and text communication client", is_aur: false },
+    UniversalPackage { key: "vlc", arch_pkg: "vlc", debian_pkg: "vlc", fedora_pkg: "vlc", desc: "VLC multimedia player framework", is_aur: false },
+    UniversalPackage { key: "mpv", arch_pkg: "mpv", debian_pkg: "mpv", fedora_pkg: "mpv", desc: "Lightweight command-line video player", is_aur: false },
+    UniversalPackage { key: "obs", arch_pkg: "obs-studio", debian_pkg: "obs-studio", fedora_pkg: "obs-studio", desc: "OBS Studio recording and streaming", is_aur: false },
+    UniversalPackage { key: "blender", arch_pkg: "blender", debian_pkg: "blender", fedora_pkg: "blender", desc: "Blender 3D computer graphics suite", is_aur: false },
+    UniversalPackage { key: "gimp", arch_pkg: "gimp", debian_pkg: "gimp", fedora_pkg: "gimp", desc: "GNU Image Manipulation Program", is_aur: false },
+    UniversalPackage { key: "ffmpeg", arch_pkg: "ffmpeg", debian_pkg: "ffmpeg", fedora_pkg: "ffmpeg", desc: "Complete media recorder and converter", is_aur: false },
 
-    // Communication & Productivity
-    ("discord", "discord", "Discord voice and text communication client", "Pacman"),
-    ("vesktop", "vesktop-bin", "Vesktop enhanced Discord client with Vencord", "AUR"),
-    ("telegram", "telegram-desktop", "Telegram desktop messaging client", "Pacman"),
-    ("signal", "signal-desktop", "Signal private messenger desktop", "Pacman"),
-    ("slack", "slack-desktop", "Slack team communication platform", "AUR"),
-    ("zoom", "zoom", "Zoom video conferencing client", "AUR"),
-    ("notion", "notion-app-electron", "Notion desktop application", "AUR"),
-    ("obsidian", "obsidian", "Markdown-based knowledge base and notes", "Pacman"),
-    ("libreoffice", "libreoffice-fresh", "LibreOffice comprehensive office suite", "Pacman"),
-    ("thunderbird", "thunderbird", "Mozilla Thunderbird email client", "Pacman"),
-
-    // Media & Audio / Video
-    ("spotify", "spotify", "Spotify music streaming client", "AUR"),
-    ("spotify launcher", "spotify-launcher", "Spotify official native Rust launcher", "Pacman"),
-    ("vlc", "vlc", "VLC multimedia player and framework", "Pacman"),
-    ("mpv", "mpv", "Lightweight GPU-accelerated command-line video player", "Pacman"),
-    ("obs", "obs-studio", "OBS Studio video recording and live streaming suite", "Pacman"),
-    ("obs studio", "obs-studio", "OBS Studio streaming and recording", "Pacman"),
-    ("gimp", "gimp", "GNU Image Manipulation Program", "Pacman"),
-    ("inkscape", "inkscape", "Vector graphics editor using SVG format", "Pacman"),
-    ("blender", "blender", "Blender 3D computer graphics suite", "Pacman"),
-    ("kdenlive", "kdenlive", "Non-linear video editor for Linux", "Pacman"),
-    ("audacity", "audacity", "Multi-track audio editor and recorder", "Pacman"),
-    ("pavucontrol", "pavucontrol", "PulseAudio/PipeWire volume control GUI", "Pacman"),
-    ("ffmpeg", "ffmpeg", "Complete cross-platform media recorder and converter", "Pacman"),
-
-    // Utilities & Security
-    ("bitwarden", "bitwarden", "Bitwarden open-source password manager", "Pacman"),
-    ("1password", "1password", "1Password security password manager", "AUR"),
-    ("keepassxc", "keepassxc", "KeePassXC cross-platform password manager", "Pacman"),
-    ("tailscale", "tailscale", "Zero-config mesh VPN based on WireGuard", "Pacman"),
-    ("protonvpn", "proton-vpn-gtk-app", "Proton VPN official Linux GTK client", "Pacman"),
-    ("wireguard", "wireguard-tools", "Extremely fast, modern VPN tunnel tools", "Pacman"),
-    ("mission center", "mission-center", "Task manager with modern graphical interface", "Pacman"),
-    ("bleachbit", "bleachbit", "System disk cleanup and cache shredder", "Pacman"),
-    ("gparted", "gparted", "Graphical partition editor", "Pacman"),
-    ("wireshark", "wireshark-qt", "Network protocol analyzer and packet sniffer", "Pacman"),
-    ("nmap", "nmap", "Network exploration tool and security scanner", "Pacman"),
-    ("grim", "grim", "Grab images from a Wayland compositor", "Pacman"),
-    ("slurp", "slurp", "Select a region in a Wayland compositor", "Pacman"),
-    ("hyprshot", "hyprshot", "Hyprland screenshot utility", "AUR"),
-    ("hyprlock", "hyprlock", "Fast GPU-accelerated screen locker for Hyprland", "Pacman"),
-    ("hypridle", "hypridle", "Hyprland idle daemon", "Pacman"),
-    ("cliphist", "cliphist", "Wayland clipboard manager", "Pacman"),
-    ("wl-clipboard", "wl-clipboard", "Wayland copy and paste command-line utilities", "Pacman"),
-    ("rofi", "rofi-wayland", "Window switcher and application launcher for Wayland", "Pacman"),
-    ("waybar", "waybar", "Highly customizable Wayland bar for Hyprland", "Pacman"),
+    // Hardware & Utilities
+    UniversalPackage { key: "supergfxctl", arch_pkg: "supergfxctl", debian_pkg: "supergfxctl", fedora_pkg: "supergfxctl", desc: "ASUS hybrid graphics mode switcher", is_aur: false },
+    UniversalPackage { key: "asusctl", arch_pkg: "asusctl", debian_pkg: "asusctl", fedora_pkg: "asusctl", desc: "ASUS ROG/TUF laptop control utility", is_aur: false },
+    UniversalPackage { key: "ghostty", arch_pkg: "ghostty", debian_pkg: "flatpak install flathub com.mitchellh.ghostty", fedora_pkg: "ghostty", desc: "Fast native GPU terminal emulator", is_aur: true },
+    UniversalPackage { key: "kitty", arch_pkg: "kitty", debian_pkg: "kitty", fedora_pkg: "kitty", desc: "GPU-accelerated terminal emulator", is_aur: false },
+    UniversalPackage { key: "alacritty", arch_pkg: "alacritty", debian_pkg: "alacritty", fedora_pkg: "alacritty", desc: "Cross-platform GPU terminal emulator", is_aur: false },
 ];
 
-fn resolve_package_command(pkg: &str) -> (String, String, String) {
+fn resolve_package_command(pkg: &str, ctx: &SystemContext) -> (String, String, String) {
     let lower_pkg = pkg.to_lowercase();
+    let pm = ctx.pkg_manager;
 
-    // 1. Exact match
-    for &(key, target_pkg, desc, cat) in POPULAR_PACKAGES {
-        if lower_pkg == key || lower_pkg == target_pkg {
-            let cmd = if cat == "AUR" {
-                format!("paru -S {}", target_pkg)
-            } else {
-                format!("sudo pacman -S {}", target_pkg)
-            };
-            return (cmd, format!("Install {} ({})", desc, cat), cat.to_string());
+    // 1. Exact match in catalog
+    for entry in UNIVERSAL_PACKAGES {
+        if lower_pkg == entry.key || lower_pkg == entry.arch_pkg || lower_pkg == entry.debian_pkg || lower_pkg == entry.fedora_pkg {
+            return format_package_install(entry, ctx);
         }
     }
 
-    // 2. Fuzzy match
-    let keys: Vec<&str> = POPULAR_PACKAGES.iter().map(|p| p.0).collect();
+    // 2. Fuzzy match in catalog
+    let keys: Vec<&str> = UNIVERSAL_PACKAGES.iter().map(|p| p.key).collect();
     if let Some((best_key, score)) = fuzzy_find_best(&lower_pkg, &keys, 0.72) {
-        if let Some(&(_, target_pkg, desc, cat)) = POPULAR_PACKAGES.iter().find(|p| p.0 == best_key) {
-            let cmd = if cat == "AUR" {
-                format!("paru -S {}", target_pkg)
-            } else {
-                format!("sudo pacman -S {}", target_pkg)
-            };
-            return (cmd, format!("Install {} (fuzzy match {:.0}%)", desc, score * 100.0), cat.to_string());
+        if let Some(entry) = UNIVERSAL_PACKAGES.iter().find(|p| p.key == best_key) {
+            let (cmd, desc, cat) = format_package_install(entry, ctx);
+            return (cmd, format!("{} (fuzzy match {:.0}%)", desc, score * 100.0), cat);
         }
     }
 
-    // 3. Fallback
+    // 3. Fallback to host distro's native package manager install command
     (
-        format!("sudo pacman -S {}", pkg),
-        format!("Install '{}' via pacman (or paru if AUR)", pkg),
-        "Pacman".to_string(),
+        pm.install_cmd(pkg),
+        format!("Install '{}' via {}", pkg, pm.name()),
+        pm.name().to_string(),
     )
+}
+
+fn format_package_install(entry: &UniversalPackage, ctx: &SystemContext) -> (String, String, String) {
+    match ctx.distro_family {
+        DistroFamily::Arch => {
+            if entry.is_aur && (ctx.pkg_manager == crate::context::PackageManager::Paru || ctx.pkg_manager == crate::context::PackageManager::Yay) {
+                (format!("{} -S {}", ctx.pkg_manager.name(), entry.arch_pkg), format!("Install {} (AUR)", entry.desc), "AUR".to_string())
+            } else if entry.is_aur {
+                (format!("paru -S {} || sudo pacman -S {}", entry.arch_pkg, entry.arch_pkg), format!("Install {} (AUR)", entry.desc), "AUR".to_string())
+            } else {
+                (format!("sudo pacman -S {}", entry.arch_pkg), format!("Install {} (Pacman)", entry.desc), "Pacman".to_string())
+            }
+        }
+        DistroFamily::Debian => {
+            if entry.debian_pkg.starts_with("flatpak") || entry.debian_pkg.starts_with("curl") || entry.debian_pkg.starts_with("cargo") {
+                (entry.debian_pkg.to_string(), format!("Install {}", entry.desc), "Install".to_string())
+            } else {
+                (format!("sudo apt install {}", entry.debian_pkg), format!("Install {} (APT)", entry.desc), "Apt".to_string())
+            }
+        }
+        DistroFamily::Fedora => {
+            if entry.fedora_pkg.starts_with("flatpak") || entry.fedora_pkg.starts_with("groupinstall") {
+                (format!("sudo dnf {}", entry.fedora_pkg), format!("Install {} (DNF)", entry.desc), "Dnf".to_string())
+            } else {
+                (format!("sudo dnf install {}", entry.fedora_pkg), format!("Install {} (DNF)", entry.desc), "Dnf".to_string())
+            }
+        }
+        _ => {
+            (ctx.pkg_manager.install_cmd(entry.arch_pkg), format!("Install {} ({})", entry.desc, ctx.pkg_manager.name()), ctx.pkg_manager.name().to_string())
+        }
+    }
 }
 
 fn parse_port_intent(lower: &str) -> Option<String> {
