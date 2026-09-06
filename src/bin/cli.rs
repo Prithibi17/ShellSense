@@ -327,7 +327,8 @@ async fn run_self_update(force: bool) -> Result<(), Box<dyn std::error::Error>> 
 
     let client = reqwest::Client::builder()
         .user_agent("ShellSense-Updater")
-        .timeout(std::time::Duration::from_secs(15))
+        .connect_timeout(std::time::Duration::from_secs(10))
+        .timeout(std::time::Duration::from_secs(180))
         .build()?;
 
     let api_url = "https://api.github.com/repos/Prithibi17/ShellSense/releases/latest";
@@ -373,20 +374,34 @@ async fn run_self_update(force: bool) -> Result<(), Box<dyn std::error::Error>> 
     println!("⚡ Updating ShellSense to v{}...", if latest_tag == "latest" { "latest" } else { &latest_tag });
     println!("   Downloading {}", download_url);
 
-    let dl_resp = client.get(&download_url).send().await?;
-    if !dl_resp.status().is_success() {
-        println!("Binary download returned {}, falling back to universal installer...", dl_resp.status());
-        let status = std::process::Command::new("bash")
-            .arg("-c")
-            .arg("curl -fsSL https://raw.githubusercontent.com/Prithibi17/ShellSense/main/install.sh | bash")
-            .status()?;
-        if !status.success() {
-            return Err("Universal installer failed to complete update".into());
+    let bytes = match client.get(&download_url).send().await {
+        Ok(res) if res.status().is_success() => match res.bytes().await {
+            Ok(b) => b,
+            Err(_) => {
+                println!("Streaming download timed out, falling back to universal installer...");
+                let status = std::process::Command::new("bash")
+                    .arg("-c")
+                    .arg("curl -fsSL https://raw.githubusercontent.com/Prithibi17/ShellSense/main/install.sh | bash")
+                    .status()?;
+                if !status.success() {
+                    return Err("Universal installer failed to complete update".into());
+                }
+                return Ok(());
+            }
+        },
+        _ => {
+            println!("Download request failed, falling back to universal installer...");
+            let status = std::process::Command::new("bash")
+                .arg("-c")
+                .arg("curl -fsSL https://raw.githubusercontent.com/Prithibi17/ShellSense/main/install.sh | bash")
+                .status()?;
+            if !status.success() {
+                return Err("Universal installer failed to complete update".into());
+            }
+            return Ok(());
         }
-        return Ok(());
-    }
+    };
 
-    let bytes = dl_resp.bytes().await?;
     let tmp_dir = std::env::temp_dir().join(format!("shellsense-update-{}", std::process::id()));
     tokio::fs::create_dir_all(&tmp_dir).await?;
     let tar_path = tmp_dir.join("shellsense.tar.gz");
