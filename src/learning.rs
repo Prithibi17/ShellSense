@@ -81,6 +81,7 @@ impl LearningEngine {
                     risk: safety.risk,
                     warning: safety.warning,
                     source: "history".to_string(),
+                    category: Some("History".to_string()),
                 }
             })
             .collect()

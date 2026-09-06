@@ -238,6 +238,7 @@ impl AIProvider for OllamaProvider {
                 risk: safety.risk,
                 warning: safety.warning,
                 source: "ai".to_string(),
+                category: Some("AI".to_string()),
             });
         }
 

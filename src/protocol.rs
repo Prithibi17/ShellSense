@@ -18,6 +18,8 @@ pub struct CandidateSuggestion {
     pub risk: RiskLevel,
     pub warning: Option<String>,
     pub source: String, // "deterministic", "ai", "history"
+    #[serde(default)]
+    pub category: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]

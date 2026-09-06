@@ -37,11 +37,25 @@ function __terminal_assistant_clear_ghost
     end
 end
 
-# Helper: Render ghost text on the line below the command
-function __terminal_assistant_render_ghost -a text
-    test -n "$text"; or return
+# Helper: Render rich aesthetic ghost line beneath the command prompt
+function __terminal_assistant_render_ghost -a raw_line
+    test -n "$raw_line"; or return
 
-    # Calculate indentation to align under command start
+    # Parse tab-separated metadata: CATEGORY \t COMMAND \t DESCRIPTION \t IS_DEST
+    set -l parts (string split \t -- "$raw_line")
+    set -l cat $parts[1]
+    set -l cmd $parts[2]
+    set -l desc $parts[3]
+    set -l is_dest $parts[4]
+
+    # Fallback if no tabs
+    if test -z "$cmd"
+        set cmd "$raw_line"
+        set cat "Linux"
+        set is_dest "ok"
+    end
+
+    # Calculate indentation under command start
     set -l prompt_str (fish_prompt 2>/dev/null)
     set -l last_line (echo -n "$prompt_str" | tail -n 1)
     set -l indent_len (string length -V -- "$last_line" 2>/dev/null)
@@ -50,13 +64,58 @@ function __terminal_assistant_render_ghost -a text
     end
     set -l spaces (string repeat -n "$indent_len" " ")
 
-    # Check if destructive warning tag is present
-    if string match -q "⚠ *" -- "$text"
-        printf "\e7\r\n\e[2K%s\e[38;5;203m└─ %s\e[0m\e8" "$spaces" "$text"
-    else
-        # Subtle faded gray matching Caelestia/dark theme
-        printf "\e7\r\n\e[2K%s\e[38;5;244m└─ %s\e[0m\e8" "$spaces" "$text"
+    # Category badge formatting with Caelestia color palette
+    set -l cat_badge ""
+    switch "$cat"
+        case AUR
+            set cat_badge "\e[38;5;81m[󰣇 AUR]\e[0m"
+        case Pacman
+            set cat_badge "\e[38;5;114m[󰮯 Pacman]\e[0m"
+        case Systemd
+            set cat_badge "\e[38;5;141m[󱓞 Systemd]\e[0m"
+        case Hardware
+            set cat_badge "\e[38;5;215m[󰢮 Hardware]\e[0m"
+        case Audio
+            set cat_badge "\e[38;5;75m[󰓃 Audio]\e[0m"
+        case Git
+            set cat_badge "\e[38;5;208m[󰊢 Git]\e[0m"
+        case Project
+            set cat_badge "\e[38;5;183m[ Project]\e[0m"
+        case Network
+            set cat_badge "\e[38;5;43m[󰒋 Network]\e[0m"
+        case Storage
+            set cat_badge "\e[38;5;178m[󰋊 Storage]\e[0m"
+        case Memory
+            set cat_badge "\e[38;5;147m[󰍛 Memory]\e[0m"
+        case Processes
+            set cat_badge "\e[38;5;222m[󰒲 Process]\e[0m"
+        case Hyprland Desktop
+            set cat_badge "\e[38;5;117m[󰖲 Wayland]\e[0m"
+        case Btrfs System
+            set cat_badge "\e[38;5;158m[󰋊 Btrfs]\e[0m"
+        case '*'
+            set cat_badge "\e[38;5;246m[$cat]\e[0m"
     end
+
+    # Multi-candidate suggestion counter
+    set -l counter_badge ""
+    set -l total (count $__terminal_assistant_suggestions)
+    if test "$total" -gt 1
+        set counter_badge " \e[38;5;242m[$__terminal_assistant_index/$total · Alt+↓]\e[0m"
+    end
+
+    # Key hint
+    set -l key_hint " \e[38;5;243m[⇥ Tab]\e[0m"
+
+    # Render line below cursor using ANSI save/restore
+    if test "$is_dest" = "dest"
+        printf "\e7\r\n\e[2K%s\e[38;5;240m└─ \e[1;38;5;203m⚠ %s\e[0m  \e[1;38;5;203m[⚠ Destructive]\e[0m%b%b\e8" \
+            "$spaces" "$cmd" "$counter_badge" "$key_hint"
+    else
+        printf "\e7\r\n\e[2K%s\e[38;5;240m└─ \e[1;38;5;254m%s\e[0m  %b%b%b\e8" \
+            "$spaces" "$cmd" "$cat_badge" "$counter_badge" "$key_hint"
+    end
+
     set -g __terminal_assistant_has_ghost 1
 end
 
@@ -68,8 +127,8 @@ function __terminal_assistant_on_change
     set -l current_cmd (commandline)
     set -l trimmed (string trim "$current_cmd")
 
-    # If input is too short (< 3 chars) or empty, clear suggestion
-    if test (string length "$trimmed") -lt 3
+    # If input is too short (< 2 chars) or empty, clear suggestion
+    if test (string length "$trimmed") -lt 2
         __terminal_assistant_clear_ghost
         set -g __terminal_assistant_current_suggestion ""
         set -g __terminal_assistant_suggestions
@@ -128,7 +187,11 @@ function __terminal_assistant_accept_ghost
         if test "$cursor_pos" -ge "$line_len"
             set -l bin (__terminal_assistant_bin)
             set -l orig "$current_cmd"
-            set -l suggestion (string replace -r '^⚠\s*' '' -- "$__terminal_assistant_current_suggestion")
+            set -l parts (string split \t -- "$__terminal_assistant_current_suggestion")
+            set -l suggestion $parts[2]
+            if test -z "$suggestion"
+                set suggestion "$__terminal_assistant_current_suggestion"
+            end
 
             __terminal_assistant_clear_ghost
             set -g __terminal_assistant_current_suggestion ""
@@ -156,7 +219,11 @@ function __terminal_assistant_tab_accept
     if test -n "$__terminal_assistant_current_suggestion"
         set -l current_cmd (commandline)
         set -l trimmed (string trim "$current_cmd")
-        set -l suggestion (string replace -r '^⚠\s*' '' -- "$__terminal_assistant_current_suggestion")
+        set -l parts (string split \t -- "$__terminal_assistant_current_suggestion")
+        set -l suggestion $parts[2]
+        if test -z "$suggestion"
+            set suggestion "$__terminal_assistant_current_suggestion"
+        end
 
         if test -n "$trimmed" -a "$trimmed" != "$suggestion"
             set -l bin (__terminal_assistant_bin)
@@ -249,7 +316,6 @@ function __terminal_assistant_bind_keys
     bind -M insert delete 'delete-char; __terminal_assistant_on_change' 2>/dev/null
 
     # Acceptance keys
-    # Right arrow accepts ghost suggestion when at end of line
     bind '\e[C' __terminal_assistant_accept_ghost 2>/dev/null
     bind -M insert '\e[C' __terminal_assistant_accept_ghost 2>/dev/null
     bind right __terminal_assistant_accept_ghost 2>/dev/null

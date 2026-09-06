@@ -148,15 +148,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
                 } else if raw_all {
                     for item in &sug_resp.suggestions {
-                        println!("{}", item.command);
+                        let cat = item.category.as_deref().unwrap_or("Linux");
+                        let is_dest = if item.risk == terminal_assistant::protocol::RiskLevel::Destructive { "dest" } else { "ok" };
+                        println!("{}\t{}\t{}\t{}", cat, item.command, item.description, is_dest);
                     }
                 } else if ghost {
                     if let Some(first) = sug_resp.suggestions.first() {
-                        let prefix = match first.risk {
-                            terminal_assistant::protocol::RiskLevel::Destructive => "⚠ ",
-                            _ => "",
-                        };
-                        print!("{}{}", prefix, first.command);
+                        let cat = first.category.as_deref().unwrap_or("Linux");
+                        let is_dest = if first.risk == terminal_assistant::protocol::RiskLevel::Destructive { "dest" } else { "ok" };
+                        println!("{}\t{}\t{}\t{}", cat, first.command, first.description, is_dest);
                     }
                 } else {
                     // Pretty human-readable output

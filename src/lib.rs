@@ -2,6 +2,7 @@ pub mod cache;
 pub mod config;
 pub mod context;
 pub mod deterministic;
+pub mod fuzzy;
 pub mod learning;
 pub mod protocol;
 pub mod provider;
@@ -171,6 +172,7 @@ impl AssistantEngine {
                     risk: safety.risk,
                     warning: safety.warning.or(cand.warning),
                     source: cand.source,
+                    category: cand.category,
                 });
             }
 
