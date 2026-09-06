@@ -52,26 +52,51 @@ function __shellsense_reset --on-event fish_prompt
     set -g __shellsense_is_destructive 0
 end
 
-# Real-time detection: invoked on every keystroke
+# Cache the binary path once per session for speed
+set -g __shellsense_bin_cache ""
+
+function __shellsense_bin_fast
+    if test -n "$__shellsense_bin_cache"
+        echo "$__shellsense_bin_cache"
+        return
+    end
+    set -l b (__shellsense_bin)
+    and set -g __shellsense_bin_cache "$b"
+    echo "$b"
+end
+
+# Real-time detection: invoked on keystroke (space/backspace/delete)
+# Only queries when the last word in the buffer is ≥3 characters —
+# avoids a round-trip on every single letter typed mid-word.
 function __shellsense_detect
     set -l current_cmd (commandline)
     set -l trimmed (string trim "$current_cmd")
 
-    # If buffer is too short, clear ghost hint
-    if test (string length "$trimmed") -lt 2
+    # Skip if too short
+    if test (string length "$trimmed") -lt 3
         __shellsense_clear_hint
         set -g __shellsense_last_query ""
         return
     end
 
-    # Skip query if unchanged
+    # Skip if unchanged since last query
     if test "$trimmed" = "$__shellsense_last_query"
         return
     end
+
+    # Only query when the last typed word is "complete" (≥3 chars or ends in space)
+    # This avoids a daemon round-trip on every letter mid-word
+    set -l last_word (string split " " -- "$trimmed" | tail -1)
+    if test (string length "$last_word") -lt 3 -a (string length "$trimmed") -gt 3
+        # Still mid-word — don't query yet, just clear stale hint
+        __shellsense_clear_hint
+        return
+    end
+
     set -g __shellsense_last_query "$trimmed"
 
-    # Fast sub-millisecond query to daemon
-    set -l bin (__shellsense_bin)
+    # Query daemon (sub-millisecond via socket)
+    set -l bin (__shellsense_bin_fast)
     or return
 
     set -l raw_line ($bin suggest --cwd "$PWD" --shell fish --raw-all --ghost "$trimmed" 2>/dev/null | head -n 1)
@@ -93,7 +118,7 @@ function __shellsense_detect
             set -g __shellsense_hint "$sug"
             set -g __shellsense_is_destructive $is_dest
 
-            # Subtle dim gray ghost text preview right after cursor
+            # Ghost text: amber for destructive, dim gray for normal
             if test "$is_dest" = "1"
                 printf "\0337\033[38;5;214m  ⚠ → %s\033[0m\033[K\0338" "$sug"
             else
@@ -110,7 +135,7 @@ end
 function __shellsense_tab
     if test -n "$__shellsense_hint"
         set -l sug "$__shellsense_hint"
-        set -l bin (__shellsense_bin)
+        set -l bin (__shellsense_bin_fast)
         set -l trimmed (string trim (commandline))
         __shellsense_clear_hint
 
