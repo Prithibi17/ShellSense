@@ -29,9 +29,6 @@ if [[ "$OS" != "Linux" ]]; then
 fi
 
 ARCH="$(uname -m)"
-if [[ "$ARCH" != "x86_64" && "$ARCH" != "aarch64" ]]; then
-    echo -e "${YELLOW}Notice: Detected architecture $ARCH. Will attempt local build if cargo is available.${RESET}"
-fi
 
 mkdir -p "$BIN_DIR"
 mkdir -p "$CONFIG_DIR"
@@ -60,12 +57,12 @@ if [[ "$LOCAL_REPO" -eq 1 && -f "$SCRIPT_DIR/target/release/shellsense" && -f "$
     INSTALLED_BINARIES=1
 fi
 
-# Option B: Download pre-built release binary from GitHub
+# Option B: Download pre-built release binary from GitHub Releases
 if [[ "$INSTALLED_BINARIES" -eq 0 && "$ARCH" == "x86_64" ]]; then
     echo -e "${CYAN}Checking for pre-compiled GitHub Release binary...${RESET}"
     RELEASE_URL="https://github.com/${REPO}/releases/latest/download/shellsense-linux-x86_64.tar.gz"
     TMP_DIR="$(mktemp -d)"
-    if curl -fsSL "$RELEASE_URL" -o "$TMP_DIR/shellsense.tar.gz" 2>/dev/null; then
+    if curl -fsSL --connect-timeout 5 --max-time 20 "$RELEASE_URL" -o "$TMP_DIR/shellsense.tar.gz" 2>/dev/null; then
         echo -e "${GREEN}✓ Downloaded pre-compiled binary release${RESET}"
         tar -xzf "$TMP_DIR/shellsense.tar.gz" -C "$TMP_DIR"
         if [[ -f "$TMP_DIR/shellsense" && -f "$TMP_DIR/shellsensd" ]]; then
@@ -80,22 +77,29 @@ fi
 # Option C: Compile from source using cargo
 if [[ "$INSTALLED_BINARIES" -eq 0 ]]; then
     if command -v cargo >/dev/null 2>&1; then
-        echo -e "${CYAN}Compiling ShellSense from source with cargo...${RESET}"
+        echo -e "${CYAN}Compiling ShellSense from source using cargo...${RESET}"
         if [[ "$LOCAL_REPO" -eq 1 ]]; then
             (cd "$SCRIPT_DIR" && cargo build --release)
             cp -f "$SCRIPT_DIR/target/release/shellsense" "$BIN_DIR/shellsense"
             cp -f "$SCRIPT_DIR/target/release/shellsensd" "$BIN_DIR/shellsensd"
             INSTALLED_BINARIES=1
         else
-            cargo install --git "https://github.com/${REPO}.git" --bins --root "$HOME/.local"
-            INSTALLED_BINARIES=1
+            TMP_BUILD="$(mktemp -d)"
+            if command -v git >/dev/null 2>&1; then
+                git clone --depth 1 "https://github.com/${REPO}.git" "$TMP_BUILD/shellsense"
+                (cd "$TMP_BUILD/shellsense" && cargo build --release)
+                cp -f "$TMP_BUILD/shellsense/target/release/shellsense" "$BIN_DIR/shellsense"
+                cp -f "$TMP_BUILD/shellsense/target/release/shellsensd" "$BIN_DIR/shellsensd"
+                INSTALLED_BINARIES=1
+            fi
+            rm -rf "$TMP_BUILD"
         fi
     fi
 fi
 
 if [[ "$INSTALLED_BINARIES" -eq 0 ]]; then
-    echo -e "${RED}Error: Failed to install ShellSense binaries.${RESET}"
-    echo -e "Please ensure 'curl' or 'cargo' (Rust) is installed."
+    echo -e "${RED}Error: Could not obtain ShellSense binaries.${RESET}"
+    echo -e "Please ensure internet connection, or install Rust with 'curl --proto =https --tlsv1.2 -sSf https://sh.rustup.rs | sh'."
     exit 1
 fi
 
@@ -130,7 +134,6 @@ fi
 # 4. Configure Shell Integrations (Fish, Bash, Zsh)
 echo -e "${CYAN}Configuring shell integrations...${RESET}"
 
-# Helper function to install shell script either from local or github
 install_shell_file() {
     local rel_path="$1"
     local dest="$2"
@@ -138,7 +141,7 @@ install_shell_file() {
     if [[ "$LOCAL_REPO" -eq 1 && -f "$SCRIPT_DIR/$rel_path" ]]; then
         cp -f "$SCRIPT_DIR/$rel_path" "$dest"
     else
-        curl -fsSL "${RAW_URL}/${rel_path}" -o "$dest"
+        curl -fsSL --connect-timeout 5 "${RAW_URL}/${rel_path}" -o "$dest" 2>/dev/null || true
     fi
 }
 
