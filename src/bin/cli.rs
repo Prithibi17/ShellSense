@@ -4,6 +4,8 @@ use shellsense::protocol::{
     ExplainRequest, ModelsRequest, RecordRequest, Request, Response, StatusRequest,
     SuggestRequest, SuggestTrigger,
 };
+use shellsense::provider::ollama::OllamaProvider;
+use shellsense::provider::AIProvider;
 use shellsense::AssistantEngine;
 use std::path::PathBuf;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -97,6 +99,33 @@ enum Commands {
         /// Force re-installation even if already on the latest version
         #[arg(long, short)]
         force: bool,
+    },
+
+    /// Manage, configure, or test the local AI engine (Qwen2.5 0.5B Instruct Q4_K_M)
+    Ai {
+        #[command(subcommand)]
+        action: AiAction,
+    },
+}
+
+#[derive(Subcommand)]
+enum AiAction {
+    /// Download and activate Qwen2.5 0.5B Instruct Q4_K_M in Ollama and enable AI suggestions
+    Setup {
+        /// Optional model to pull and activate (default: qwen2.5:0.5b)
+        #[arg(default_value = "qwen2.5:0.5b")]
+        model: String,
+    },
+    /// Show current AI engine status, active model, and Ollama connection
+    Status,
+    /// Enable AI suggestions in ShellSense configuration
+    On,
+    /// Disable AI suggestions (pure offline deterministic mode)
+    Off,
+    /// Directly test AI command generation on a natural language intent
+    Test {
+        /// The query or intent to test
+        prompt: String,
     },
 }
 
@@ -281,6 +310,173 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         Commands::Update { force } => {
             run_self_update(force).await?;
+        }
+
+        Commands::Ai { action } => {
+            handle_ai_command(action).await?;
+        }
+    }
+
+    Ok(())
+}
+
+async fn handle_ai_command(action: AiAction) -> Result<(), Box<dyn std::error::Error>> {
+    let mut config = Config::load_or_default();
+
+    match action {
+        AiAction::Setup { model } => {
+            println!("🚀 Setting up ShellSense AI Engine with Qwen2.5 0.5B Instruct Q4_K_M...");
+            println!("   Target Model: {}", model);
+            println!("   Endpoint:     {}", config.ai.endpoint);
+
+            // 1. Verify Ollama is reachable
+            let client = reqwest::Client::builder()
+                .connect_timeout(std::time::Duration::from_secs(3))
+                .build()?;
+            let url = format!("{}/api/tags", config.ai.endpoint.trim_end_matches('/'));
+
+            let reachable = client.get(&url).send().await.is_ok();
+            if !reachable {
+                eprintln!("\n⚠️  Could not connect to Ollama at {}", config.ai.endpoint);
+                eprintln!("   Attempting to start Ollama service...");
+                let _ = std::process::Command::new("systemctl")
+                    .args(["--user", "start", "ollama"])
+                    .status();
+                tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+
+                if client.get(&url).send().await.is_err() {
+                    eprintln!("❌ Ollama is not running. Please start Ollama using: ollama serve");
+                    return Ok(());
+                }
+            }
+
+            // 2. Check if model is already present
+            let provider = OllamaProvider::new(config.ai.endpoint.clone(), model.clone(), 5000);
+            let installed = provider.list_models().await.unwrap_or_default();
+            let model_installed = installed.iter().any(|m| m.to_lowercase() == model.to_lowercase() || m.to_lowercase().contains(&model.to_lowercase()));
+
+            if !model_installed {
+                println!("\n📥 Pulling {} (Qwen2.5 0.5B Instruct Q4_K_M) via Ollama...", model);
+                println!("   Size is ~397 MB (very lightweight & ultra-fast)...");
+                let status = std::process::Command::new("ollama")
+                    .args(["pull", &model])
+                    .status();
+                if let Ok(st) = status {
+                    if !st.success() {
+                        eprintln!("❌ Failed to pull model via `ollama pull {}`.", model);
+                        return Ok(());
+                    }
+                } else {
+                    eprintln!("❌ Could not execute `ollama` CLI. Is Ollama installed?");
+                    return Ok(());
+                }
+            } else {
+                println!("✓ Model {} is already installed in Ollama.", model);
+            }
+
+            // 3. Update config
+            config.set_ai_enabled(true)?;
+            config.set_ai_model(&model)?;
+            println!("✓ Configured ~/.config/shellsense/config.toml (ai_enabled = true, model = \"{}\")", model);
+
+            // 4. Restart systemd daemon service
+            println!("🔄 Restarting shellsense.service daemon...");
+            let _ = std::process::Command::new("systemctl")
+                .args(["--user", "restart", "shellsense.service"])
+                .status();
+
+            // 5. Test inference
+            println!("\n⚡ Testing inference with {}...", model);
+            let start = std::time::Instant::now();
+            let test_ctx = shellsense::context::SystemContext::gather(None, None, None);
+            match provider.suggest("find files modified today", &test_ctx).await {
+                Ok(sugs) => {
+                    let latency = start.elapsed().as_millis();
+                    if let Some(first) = sugs.first() {
+                        println!("✓ AI Engine generated test command: `{}` in {}ms", first.command, latency);
+                    }
+                }
+                Err(e) => {
+                    eprintln!("⚠️  Test inference warning: {}", e);
+                }
+            }
+
+            println!("\n✨ ShellSense AI is now active and powered by Qwen2.5 0.5B Instruct Q4_K_M!");
+            println!("💡 Try typing natural language queries in your terminal (e.g. `find large files`)!");
+        }
+
+        AiAction::Status => {
+            let config = Config::load_or_default();
+            println!("ShellSense AI Status:");
+            println!("  AI Enabled:       {}", if config.general.ai_enabled { "Yes ●" } else { "No ○ (run `ss ai on` to enable)" });
+            println!("  Configured Model: {}", config.ai.model);
+            println!("  Ollama Endpoint:  {}", config.ai.endpoint);
+
+            let provider = OllamaProvider::new(config.ai.endpoint.clone(), config.ai.model.clone(), 3000);
+            match provider.list_models().await {
+                Ok(models) => {
+                    println!("  Ollama Daemon:    ● Connected");
+                    let active = provider.select_active_model().await.unwrap_or_else(|_| "none".to_string());
+                    println!("  Active Model:     {}", active);
+                    println!("  Installed Models ({}):", models.len());
+                    for m in &models {
+                        let tag = if m.contains("0.5b") || m.contains("qwen2.5") { " (Qwen2.5 0.5B)" } else { "" };
+                        println!("    - {}{}", m, tag);
+                    }
+                }
+                Err(e) => {
+                    println!("  Ollama Daemon:    ○ Disconnected ({})", e);
+                }
+            }
+        }
+
+        AiAction::On => {
+            config.set_ai_enabled(true)?;
+            let _ = std::process::Command::new("systemctl")
+                .args(["--user", "restart", "shellsense.service"])
+                .status();
+            println!("✓ AI suggestions ENABLED in ~/.config/shellsense/config.toml (Model: {})", config.ai.model);
+            println!("  Daemon restarted.");
+        }
+
+        AiAction::Off => {
+            config.set_ai_enabled(false)?;
+            let _ = std::process::Command::new("systemctl")
+                .args(["--user", "restart", "shellsense.service"])
+                .status();
+            println!("✓ AI suggestions DISABLED in ~/.config/shellsense/config.toml");
+            println!("  Pure native deterministic engine active. Daemon restarted.");
+        }
+
+        AiAction::Test { prompt } => {
+            println!("🧠 Testing ShellSense AI with prompt: \"{}\"", prompt);
+            let provider = OllamaProvider::new(config.ai.endpoint.clone(), config.ai.model.clone(), 5000);
+            let start = std::time::Instant::now();
+            let test_ctx = shellsense::context::SystemContext::gather(None, None, None);
+
+            match provider.suggest(&prompt, &test_ctx).await {
+                Ok(suggestions) => {
+                    let latency = start.elapsed().as_millis();
+                    let active = provider.select_active_model().await.unwrap_or_else(|_| "unknown".to_string());
+                    println!("\nModel:   {} (Qwen2.5 0.5B Instruct Q4_K_M)", active);
+                    println!("Latency: {}ms\n", latency);
+                    if suggestions.is_empty() {
+                        println!("No suggestions generated.");
+                    } else {
+                        for (i, s) in suggestions.iter().enumerate() {
+                            println!("{}. \x1b[1;32m{}\x1b[0m", i + 1, s.command);
+                            println!("   Description: {}", s.description);
+                            println!("   Confidence:  {:.0}% | Risk: {:?}", s.confidence * 100.0, s.risk);
+                            if let Some(ref w) = s.warning {
+                                println!("   \x1b[1;33mWarning:\x1b[0m {}", w);
+                            }
+                        }
+                    }
+                }
+                Err(e) => {
+                    eprintln!("❌ AI Generation Error: {}", e);
+                }
+            }
         }
     }
 

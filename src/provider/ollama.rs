@@ -29,6 +29,9 @@ struct OllamaGenerateRequest {
     prompt: String,
     system: String,
     stream: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    format: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     options: Option<serde_json::Value>,
 }
 
@@ -59,17 +62,33 @@ impl OllamaProvider {
     }
 
     pub async fn select_active_model(&self) -> Result<String, String> {
+        let models = self.list_models().await?;
+        if models.is_empty() {
+            return Err("No Ollama models installed. Run `ss ai setup` to download Qwen2.5 0.5B Instruct Q4_K_M.".to_string());
+        }
+
+        // If an explicit model is configured, check for exact or substring match
         if !self.model_override.is_empty() && self.model_override != "auto" {
+            let lower_req = self.model_override.to_lowercase();
+            if let Some(m) = models.iter().find(|m| m.to_lowercase() == lower_req || m.to_lowercase().contains(&lower_req)) {
+                return Ok(m.clone());
+            }
             return Ok(self.model_override.clone());
         }
 
-        let models = self.list_models().await?;
-        if models.is_empty() {
-            return Err("No Ollama models installed. Pull a model (e.g. `ollama pull qwen2.5-coder:1.5b`) to enable AI suggestions.".to_string());
-        }
-
-        // Pick preferred coder/command models
-        let priority_keywords = ["qwen2.5-coder", "coder", "qwen", "deepseek", "codellama", "mistral", "llama"];
+        // Pick preferred coder/command models, prioritizing Qwen2.5 0.5B Instruct Q4_K_M
+        let priority_keywords = [
+            "qwen2.5:0.5b",
+            "qwen2.5-coder:0.5b",
+            "0.5b",
+            "qwen2.5-coder",
+            "qwen2.5",
+            "qwen",
+            "deepseek",
+            "codellama",
+            "mistral",
+            "llama",
+        ];
         for keyword in priority_keywords {
             if let Some(m) = models.iter().find(|m| m.to_lowercase().contains(keyword)) {
                 return Ok(m.clone());
@@ -117,16 +136,24 @@ impl AIProvider for OllamaProvider {
     async fn suggest(&self, input: &str, ctx: &SystemContext) -> Result<Vec<CandidateSuggestion>, String> {
         let model = self.select_active_model().await?;
 
+        let pm_rule = match ctx.pkg_manager {
+            crate::context::PackageManager::Paru | crate::context::PackageManager::Yay | crate::context::PackageManager::Pacman => {
+                "Arch/CachyOS system. Use pacman or paru. Never suggest apt or dnf."
+            }
+            crate::context::PackageManager::Apt => "Debian/Ubuntu system. Use apt. Never suggest pacman or dnf.",
+            crate::context::PackageManager::Dnf => "Fedora/RHEL system. Use dnf. Never suggest pacman or apt.",
+            crate::context::PackageManager::Zypper => "openSUSE system. Use zypper.",
+            _ => "Linux system. Use standard native commands.",
+        };
+
         let system_prompt = format!(
-            "You are a native Linux terminal command generation engine for CachyOS (an Arch Linux derivative). \
-            The user shell is fish. Desktop is Hyprland on Wayland. \
-            Package manager is pacman for official repos and paru for AUR. \
-            CRITICAL RULES: \
-            1. NEVER suggest Ubuntu/Debian commands (NEVER use 'apt', 'apt-get', etc.). \
-            2. Output MUST be ONLY valid JSON matching this exact structure: \
-            {{\"suggestions\": [{{\"command\": \"...\", \"description\": \"...\", \"confidence\": 0.95}}]}} \
-            3. Do not include markdown code block formatting (no ```json or ```). Return raw JSON only. \
-            4. Provide 1 to 3 distinct relevant command candidates.",
+            "You are a native Linux terminal command assistant for {} using {} shell. {}\n\
+            Output ONLY valid JSON matching this exact structure:\n\
+            {{\"suggestions\": [{{\"command\": \"...\", \"description\": \"...\", \"confidence\": 0.95}}]}}\n\
+            Keep descriptions under 10 words. Provide 1 or 2 concise candidates.",
+            ctx.os_id,
+            ctx.shell,
+            pm_rule,
         );
 
         let files_summary = if ctx.files.is_empty() {
@@ -157,9 +184,10 @@ impl AIProvider for OllamaProvider {
             prompt: user_prompt,
             system: system_prompt,
             stream: false,
+            format: Some("json".to_string()),
             options: Some(serde_json::json!({
                 "temperature": 0.1,
-                "top_p": 0.8,
+                "num_predict": 256,
                 "stop": ["\n\n"]
             })),
         };
@@ -184,16 +212,25 @@ impl AIProvider for OllamaProvider {
 
         let clean_json = extract_json(&gen_resp.response);
 
-        // Try parsing {"suggestions": [...]}
+        // Try parsing {"suggestions": [...]} or direct single object
         #[derive(Deserialize)]
         struct Envelope {
             suggestions: Option<Vec<ParsedAiSuggestion>>,
+            command: Option<String>,
+            description: Option<String>,
+            confidence: Option<f32>,
         }
 
         let mut parsed_list = Vec::new();
         if let Ok(env) = serde_json::from_str::<Envelope>(&clean_json) {
             if let Some(list) = env.suggestions {
                 parsed_list = list;
+            } else if let Some(cmd) = env.command {
+                parsed_list.push(ParsedAiSuggestion {
+                    command: cmd,
+                    description: env.description,
+                    confidence: env.confidence,
+                });
             }
         }
 
@@ -258,6 +295,7 @@ impl AIProvider for OllamaProvider {
             prompt,
             system: "You are a concise Linux terminal expert. Provide short, accurate 1-2 sentence explanations with no pleasantries.".to_string(),
             stream: false,
+            format: None,
             options: Some(serde_json::json!({
                 "temperature": 0.2
             })),
@@ -283,18 +321,97 @@ impl AIProvider for OllamaProvider {
 
 fn extract_json(raw: &str) -> String {
     let trimmed = raw.trim();
-    if let Some(start) = trimmed.find("```json") {
+    let body = if let Some(start) = trimmed.find("```json") {
         if let Some(end) = trimmed[start + 7..].find("```") {
-            return trimmed[start + 7..start + 7 + end].trim().to_string();
+            trimmed[start + 7..start + 7 + end].trim()
+        } else {
+            trimmed[start + 7..].trim()
         }
     } else if let Some(start) = trimmed.find("```") {
         if let Some(end) = trimmed[start + 3..].find("```") {
-            return trimmed[start + 3..start + 3 + end].trim().to_string();
+            trimmed[start + 3..start + 3 + end].trim()
+        } else {
+            trimmed[start + 3..].trim()
         }
-    } else if let (Some(s), Some(e)) = (trimmed.find('{'), trimmed.rfind('}')) {
-        if s <= e {
-            return trimmed[s..=e].to_string();
+    } else if let Some(s) = trimmed.find('{') {
+        if let Some(e) = trimmed.rfind('}') {
+            if s <= e {
+                &trimmed[s..=e]
+            } else {
+                &trimmed[s..]
+            }
+        } else {
+            &trimmed[s..]
+        }
+    } else {
+        trimmed
+    };
+
+    repair_truncated_json(body)
+}
+
+fn repair_truncated_json(input: &str) -> String {
+    let trimmed = input.trim();
+    if serde_json::from_str::<serde_json::Value>(trimmed).is_ok() {
+        return trimmed.to_string();
+    }
+
+    // If it started an array of suggestions but was cut off before closing
+    if trimmed.starts_with("{\"suggestions\":") || trimmed.starts_with("{\"suggestions\" :") {
+        if let Some(last_close) = trimmed.rfind('}') {
+            let candidate = format!("{}]}}", &trimmed[..=last_close]);
+            if serde_json::from_str::<serde_json::Value>(&candidate).is_ok() {
+                return candidate;
+            }
         }
     }
+
     trimmed.to_string()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_extract_json_envelope() {
+        let raw = r#"{"suggestions": [{"command": "du -sh *", "description": "Check file sizes", "confidence": 0.9}]}"#;
+        assert_eq!(extract_json(raw), raw);
+
+        let markdown = format!("```json\n{}\n```", raw);
+        assert_eq!(extract_json(&markdown), raw);
+    }
+
+    #[test]
+    fn test_extract_json_single_object() {
+        let raw = r#"{"command": "du -sh *", "description": "Check file sizes"}"#;
+        assert_eq!(extract_json(raw), raw);
+    }
+
+    #[test]
+    fn test_repair_truncated_json() {
+        let truncated = r#"{"suggestions": [{"command": "ls -lh", "description": "list files"}, {"command": "find ."#;
+        let repaired = repair_truncated_json(truncated);
+        assert_eq!(repaired, r#"{"suggestions": [{"command": "ls -lh", "description": "list files"}]}"#);
+    }
+
+    #[test]
+    fn test_parse_ollama_live_sample() {
+        let raw = r#"{"suggestions": [{"command": "find /tmp -type f -mtime -1 -size +5000000", "description": "Find all files larger than 50MB modified in the last 1 day", "confidence": 1}, {"command": "find /tmp -type f -mtime -365 -size +5000000", "description": "Find all files larger than 50MB modified in the last 1 year", "confidence": 1}]}"#;
+        #[derive(Deserialize)]
+        struct Envelope {
+            suggestions: Option<Vec<ParsedAiSuggestion>>,
+            #[allow(dead_code)]
+            command: Option<String>,
+            #[allow(dead_code)]
+            description: Option<String>,
+            #[allow(dead_code)]
+            confidence: Option<f32>,
+        }
+        let env = serde_json::from_str::<Envelope>(raw);
+        assert!(env.is_ok());
+        let list = env.unwrap().suggestions.unwrap();
+        assert_eq!(list.len(), 2);
+    }
+}
+

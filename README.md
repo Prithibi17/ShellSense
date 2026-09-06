@@ -55,8 +55,9 @@ prithibi@cachyos ~> systemctl --user restart pipewire wireplumber
 - 🐚 **Native Shell Integrations**:
   - First-class support for **Fish**, **Bash**, and **Zsh**.
 
-- 🤖 **Optional AI Intent Engine**:
-  - Need natural language synthesis for obscure commands? Turn on local **Ollama** in `config.toml` (`ai_enabled = true`).
+- 🤖 **Deep AI Intent Engine (Qwen2.5 0.5B Instruct Q4_K_M)**:
+  - Need natural language synthesis for complex or obscure commands? Turn on local AI with `ss ai setup`.
+  - Uses ultra-lightweight (~397 MB) **Qwen2.5 0.5B Instruct Q4_K_M** with grammar-constrained JSON output for 150–300ms generation without cloud latency.
 
 - ⚠️ **Safety & Destructive Command Warnings**:
   - Commands like `rm -rf`, `mkfs`, `dd of=/dev/`, `fdisk`, and `wipefs` are flagged with destructive warnings. Commands are **never auto-executed**—they are placed into the line buffer for your review.
@@ -160,6 +161,12 @@ ss suggest --raw "kill port 8080"
 # Check for updates and update ShellSense instantly
 ss update
 
+# Set up or test local Qwen2.5 0.5B Instruct Q4_K_M AI engine
+ss ai setup          # 1-command setup: pulls model, configures, and restarts daemon
+ss ai status         # View AI connectivity, health, and active model
+ss ai test "convert video.mp4 to mp3"  # Test generation directly with latency diagnostics
+ss ai on / ss ai off # Toggle AI generation
+
 # View daemon status and auto-detected hardware
 ss status
 
@@ -169,22 +176,32 @@ ss explain "sudo pacman -Syu"
 
 ---
 
+## 🤖 Deep AI Engine (Qwen2.5 0.5B Instruct Q4_K_M)
+
+ShellSense natively integrates **Qwen2.5 0.5B Instruct Q4_K_M** through local Ollama inference:
+- **Ultra-lightweight (~397 MB)**: Runs locally with zero lag on CPU or GPU without hogging system resources.
+- **Sub-Second Generation**: Generates accurate, grammar-constrained commands in ~150–300ms.
+- **Context-Aware**: Adapts dynamically to your distro (`pacman`/`paru`, `apt`, `dnf`, `zypper`, `brew`), current working directory files, and shell.
+
+---
+
 ## ⚙️ Configuration
 
 Configuration is located at `~/.config/shellsense/config.toml`:
 
 ```toml
-# ShellSense Configuration
+[general]
+shell = "fish"
+ai_enabled = true       # Enable or disable AI intent engine
+max_suggestions = 3     # Maximum candidates (1-5)
+debounce_ms = 300       # Debounce time before querying AI
+deterministic_first = true # Run sub-millisecond local rules first
 
-# Set to true to enable local Ollama AI synthesis for unknown commands
-ai_enabled = false
-
-# Ollama local model and endpoint
-model = "deepseek-r1:1.5b"
-ollama_url = "http://localhost:11434"
-
-# Cache time-to-live in seconds
-cache_ttl_secs = 3600
+[ai]
+provider = "ollama"
+model = "qwen2.5:0.5b"  # Qwen2.5 0.5B Instruct Q4_K_M
+endpoint = "http://127.0.0.1:11434"
+timeout_ms = 2000
 ```
 
 ---

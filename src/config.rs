@@ -49,9 +49,9 @@ impl Default for AiConfig {
     fn default() -> Self {
         Self {
             provider: "ollama".to_string(),
-            model: "auto".to_string(),
+            model: "qwen2.5:0.5b".to_string(),
             endpoint: "http://127.0.0.1:11434".to_string(),
-            timeout_ms: 3000,
+            timeout_ms: 2000,
         }
     }
 }
@@ -172,6 +172,16 @@ impl Config {
         let toml_str = toml::to_string_pretty(config)
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
         fs::write(Self::config_file(), toml_str)
+    }
+
+    pub fn set_ai_enabled(&mut self, enabled: bool) -> std::io::Result<()> {
+        self.general.ai_enabled = enabled;
+        Self::save(self)
+    }
+
+    pub fn set_ai_model(&mut self, model: &str) -> std::io::Result<()> {
+        self.ai.model = model.to_string();
+        Self::save(self)
     }
 }
 
