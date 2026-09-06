@@ -65,21 +65,28 @@ prithibi@cachyos ~> systemctl --user restart pipewire wireplumber
 
 ## 🚀 Quick Install
 
-### One-Line Automated Installer (Recommended)
+### One-Line Automated Installer (Zero-Setup)
 
-Works on any Linux distribution (Fish, Bash, Zsh):
+Install and activate ShellSense in under 3 seconds on any Linux distribution (Fish, Bash, Zsh):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Prithibi17/ShellSense/main/install.sh | bash
+```
+
+No cloning, compiling, or manual setup required! The installer will automatically:
+1. Download or link pre-compiled native binaries to `~/.local/bin/` and configure the short alias `ss`.
+2. Configure real-time inline detection and Tab completion for your installed shells (**Fish**, **Bash**, **Zsh**).
+3. Start and enable the background user daemon (`shellsense.service`).
+
+---
+
+### Alternative: Install via Git Clone & Local Build
 
 ```bash
 git clone https://github.com/Prithibi17/ShellSense.git
-cd shellsense
+cd ShellSense
 ./install.sh
 ```
-
-The installer will:
-1. Compile the release binaries (`shellsense`, `shellsensd`).
-2. Install them to `~/.local/bin/` with a short alias `ss`.
-3. Configure integrations for your installed shells (**Fish**, **Bash**, **Zsh**).
-4. Start and enable the systemd user service (`shellsense.service`).
 
 ---
 

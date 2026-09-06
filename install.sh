@@ -1,117 +1,176 @@
 #!/usr/bin/env bash
-# install.sh - Universal Linux Installer for ShellSense
-# Works on any Linux distribution (Arch, Debian, Ubuntu, Fedora, openSUSE, Alpine, Void, etc.)
-# Supports Fish, Bash, and Zsh on any hardware configuration.
+# install.sh - Universal 1-Line Installer for ShellSense
+# Can be run via:
+#   curl -fsSL https://raw.githubusercontent.com/Prithibi17/ShellSense/main/install.sh | bash
+# or locally inside a cloned repository:
+#   ./install.sh
 
 set -e
+
+REPO="Prithibi17/ShellSense"
+RAW_URL="https://raw.githubusercontent.com/${REPO}/main"
+BIN_DIR="${HOME}/.local/bin"
+CONFIG_DIR="${HOME}/.config/shellsense"
 
 BOLD="\033[1m"
 GREEN="\033[32m"
 CYAN="\033[36m"
 YELLOW="\033[33m"
+RED="\033[31m"
 RESET="\033[0m"
 
-echo -e "${BOLD}${CYAN}=== Installing ShellSense (Universal Linux) ===${RESET}"
+echo -e "${BOLD}${CYAN}=== ShellSense Universal Installer ===${RESET}"
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-BIN_DIR="$HOME/.local/bin"
-CONFIG_DIR="$HOME/.config/shellsense"
+# Verify OS
+OS="$(uname -s)"
+if [[ "$OS" != "Linux" ]]; then
+    echo -e "${RED}Error: ShellSense currently supports Linux. Detected: $OS${RESET}"
+    exit 1
+fi
+
+ARCH="$(uname -m)"
+if [[ "$ARCH" != "x86_64" && "$ARCH" != "aarch64" ]]; then
+    echo -e "${YELLOW}Notice: Detected architecture $ARCH. Will attempt local build if cargo is available.${RESET}"
+fi
 
 mkdir -p "$BIN_DIR"
 mkdir -p "$CONFIG_DIR"
 
-# 1. Stop legacy services if running
-if command -v systemctl >/dev/null 2>&1; then
-    systemctl --user stop terminal-assistant.service 2>/dev/null || true
-    systemctl --user disable terminal-assistant.service 2>/dev/null || true
-    rm -f "$HOME/.config/systemd/user/terminal-assistant.service"
-    systemctl --user stop shellsense.service 2>/dev/null || true
+# Determine script context (local repository vs piped from curl)
+LOCAL_REPO=0
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd || echo "")"
+if [[ -n "$SCRIPT_DIR" && -f "$SCRIPT_DIR/Cargo.toml" && -f "$SCRIPT_DIR/fish/shellsense.fish" ]]; then
+    LOCAL_REPO=1
 fi
 
-# Remove legacy fish integration if present
-rm -f "$HOME/.config/fish/conf.d/terminal-assistant.fish"
+# 1. Stop existing daemon during upgrade
+if command -v systemctl >/dev/null 2>&1; then
+    systemctl --user stop shellsense.service 2>/dev/null || true
+fi
+pkill -f "shellsensd" 2>/dev/null || true
 
-# 2. Build or locate release binaries
-if [[ -f "$SCRIPT_DIR/target/release/shellsense" && -f "$SCRIPT_DIR/target/release/shellsensd" ]]; then
-    echo -e "${GREEN}✓ Found compiled release binaries${RESET}"
-else
-    echo -e "${CYAN}Compiling release binaries using cargo...${RESET}"
+# 2. Obtain release binaries (Pre-built release -> Local compiled -> Cargo build)
+INSTALLED_BINARIES=0
+
+# Option A: Local pre-compiled binaries in target/release/
+if [[ "$LOCAL_REPO" -eq 1 && -f "$SCRIPT_DIR/target/release/shellsense" && -f "$SCRIPT_DIR/target/release/shellsensd" ]]; then
+    echo -e "${GREEN}✓ Using local compiled binaries${RESET}"
+    cp -f "$SCRIPT_DIR/target/release/shellsense" "$BIN_DIR/shellsense"
+    cp -f "$SCRIPT_DIR/target/release/shellsensd" "$BIN_DIR/shellsensd"
+    INSTALLED_BINARIES=1
+fi
+
+# Option B: Download pre-built release binary from GitHub
+if [[ "$INSTALLED_BINARIES" -eq 0 && "$ARCH" == "x86_64" ]]; then
+    echo -e "${CYAN}Checking for pre-compiled GitHub Release binary...${RESET}"
+    RELEASE_URL="https://github.com/${REPO}/releases/latest/download/shellsense-linux-x86_64.tar.gz"
+    TMP_DIR="$(mktemp -d)"
+    if curl -fsSL "$RELEASE_URL" -o "$TMP_DIR/shellsense.tar.gz" 2>/dev/null; then
+        echo -e "${GREEN}✓ Downloaded pre-compiled binary release${RESET}"
+        tar -xzf "$TMP_DIR/shellsense.tar.gz" -C "$TMP_DIR"
+        if [[ -f "$TMP_DIR/shellsense" && -f "$TMP_DIR/shellsensd" ]]; then
+            cp -f "$TMP_DIR/shellsense" "$BIN_DIR/shellsense"
+            cp -f "$TMP_DIR/shellsensd" "$BIN_DIR/shellsensd"
+            INSTALLED_BINARIES=1
+        fi
+    fi
+    rm -rf "$TMP_DIR"
+fi
+
+# Option C: Compile from source using cargo
+if [[ "$INSTALLED_BINARIES" -eq 0 ]]; then
     if command -v cargo >/dev/null 2>&1; then
-        (cd "$SCRIPT_DIR" && cargo build --release)
-    else
-        echo -e "${YELLOW}Error: cargo not found. Please install Rust or precompile release binaries.${RESET}"
-        exit 1
+        echo -e "${CYAN}Compiling ShellSense from source with cargo...${RESET}"
+        if [[ "$LOCAL_REPO" -eq 1 ]]; then
+            (cd "$SCRIPT_DIR" && cargo build --release)
+            cp -f "$SCRIPT_DIR/target/release/shellsense" "$BIN_DIR/shellsense"
+            cp -f "$SCRIPT_DIR/target/release/shellsensd" "$BIN_DIR/shellsensd"
+            INSTALLED_BINARIES=1
+        else
+            cargo install --git "https://github.com/${REPO}.git" --bins --root "$HOME/.local"
+            INSTALLED_BINARIES=1
+        fi
     fi
 fi
 
-# 3. Install binaries to ~/.local/bin and symlink 'ss'
-echo -e "${CYAN}Installing binaries to ${BIN_DIR}...${RESET}"
-cp -f "$SCRIPT_DIR/target/release/shellsense" "$BIN_DIR/shellsense"
-cp -f "$SCRIPT_DIR/target/release/shellsensd" "$BIN_DIR/shellsensd"
-chmod +x "$BIN_DIR/shellsense" "$BIN_DIR/shellsensd"
+if [[ "$INSTALLED_BINARIES" -eq 0 ]]; then
+    echo -e "${RED}Error: Failed to install ShellSense binaries.${RESET}"
+    echo -e "Please ensure 'curl' or 'cargo' (Rust) is installed."
+    exit 1
+fi
 
-# Create short alias 'ss' -> shellsense if not clashing
+chmod +x "$BIN_DIR/shellsense" "$BIN_DIR/shellsensd"
 ln -sf "$BIN_DIR/shellsense" "$BIN_DIR/ss"
 
-# Also copy to ~/.cargo/bin if present
+# Also sync to ~/.cargo/bin if user has it
 if [[ -d "$HOME/.cargo/bin" ]]; then
     cp -f "$BIN_DIR/shellsense" "$HOME/.cargo/bin/" 2>/dev/null || true
     cp -f "$BIN_DIR/shellsensd" "$HOME/.cargo/bin/" 2>/dev/null || true
     ln -sf "$HOME/.cargo/bin/shellsense" "$HOME/.cargo/bin/ss" 2>/dev/null || true
 fi
 
-# 4. Create default configuration if not present (or copy from legacy)
+# Ensure ~/.local/bin is in PATH
+if [[ ":$PATH:" != *":$BIN_DIR:"* ]]; then
+    echo -e "${YELLOW}Notice: Adding ${BIN_DIR} to your PATH${RESET}"
+    export PATH="$BIN_DIR:$PATH"
+fi
+
+# 3. Setup Default Configuration
 if [[ ! -f "$CONFIG_DIR/config.toml" ]]; then
-    if [[ -f "$HOME/.config/terminal-assistant/config.toml" ]]; then
-        cp "$HOME/.config/terminal-assistant/config.toml" "$CONFIG_DIR/config.toml"
-        echo -e "${GREEN}✓ Migrated existing configuration to ${CONFIG_DIR}/config.toml${RESET}"
-    else
-        cat << 'EOF' > "$CONFIG_DIR/config.toml"
+    cat << 'EOF' > "$CONFIG_DIR/config.toml"
 # ShellSense Configuration
 ai_enabled = false
 model = "deepseek-r1:1.5b"
 ollama_url = "http://localhost:11434"
 cache_ttl_secs = 3600
 EOF
-        echo -e "${GREEN}✓ Created default config at ${CONFIG_DIR}/config.toml${RESET}"
-    fi
+    echo -e "${GREEN}✓ Created configuration at ${CONFIG_DIR}/config.toml${RESET}"
 fi
 
-# 5. Configure Shell Integrations (Fish, Bash, Zsh)
+# 4. Configure Shell Integrations (Fish, Bash, Zsh)
 echo -e "${CYAN}Configuring shell integrations...${RESET}"
 
-# Fish shell
-if command -v fish >/dev/null 2>&1 || [[ -d "$HOME/.config/fish" ]]; then
-    mkdir -p "$HOME/.config/fish/conf.d"
-    cp -f "$SCRIPT_DIR/fish/shellsense.fish" "$HOME/.config/fish/conf.d/shellsense.fish"
-    echo -e "${GREEN}✓ Fish integration installed to ~/.config/fish/conf.d/shellsense.fish${RESET}"
-fi
-
-# Bash shell
-BASH_LINE="[ -f \"$CONFIG_DIR/shellsense.bash\" ] && source \"$CONFIG_DIR/shellsense.bash\""
-cp -f "$SCRIPT_DIR/bash/shellsense.bash" "$CONFIG_DIR/shellsense.bash"
-if [[ -f "$HOME/.bashrc" ]]; then
-    # Remove any old terminal-assistant references
-    sed -i '/terminal-assistant\.bash/d' "$HOME/.bashrc" 2>/dev/null || true
-    if ! grep -q "shellsense.bash" "$HOME/.bashrc"; then
-        echo -e "\n# ShellSense\n$BASH_LINE" >> "$HOME/.bashrc"
+# Helper function to install shell script either from local or github
+install_shell_file() {
+    local rel_path="$1"
+    local dest="$2"
+    mkdir -p "$(dirname "$dest")"
+    if [[ "$LOCAL_REPO" -eq 1 && -f "$SCRIPT_DIR/$rel_path" ]]; then
+        cp -f "$SCRIPT_DIR/$rel_path" "$dest"
+    else
+        curl -fsSL "${RAW_URL}/${rel_path}" -o "$dest"
     fi
-    echo -e "${GREEN}✓ Bash integration enabled in ~/.bashrc${RESET}"
+}
+
+# Fish Shell
+if command -v fish >/dev/null 2>&1 || [[ -d "$HOME/.config/fish" ]]; then
+    install_shell_file "fish/shellsense.fish" "$HOME/.config/fish/conf.d/shellsense.fish"
+    echo -e "${GREEN}✓ Fish integration enabled (~/.config/fish/conf.d/shellsense.fish)${RESET}"
 fi
 
-# Zsh shell
-ZSH_LINE="[ -f \"$CONFIG_DIR/shellsense.zsh\" ] && source \"$CONFIG_DIR/shellsense.zsh\""
-cp -f "$SCRIPT_DIR/zsh/shellsense.zsh" "$CONFIG_DIR/shellsense.zsh"
+# Bash Shell
+BASH_SCRIPT="$CONFIG_DIR/shellsense.bash"
+install_shell_file "bash/shellsense.bash" "$BASH_SCRIPT"
+if [[ -f "$HOME/.bashrc" ]] || command -v bash >/dev/null 2>&1; then
+    touch "$HOME/.bashrc"
+    sed -i '/shellsense\.bash/d' "$HOME/.bashrc" 2>/dev/null || true
+    sed -i '/# ShellSense/d' "$HOME/.bashrc" 2>/dev/null || true
+    echo -e "\n# ShellSense\n[ -f \"$BASH_SCRIPT\" ] && source \"$BASH_SCRIPT\"" >> "$HOME/.bashrc"
+    echo -e "${GREEN}✓ Bash integration enabled (~/.bashrc)${RESET}"
+fi
+
+# Zsh Shell
+ZSH_SCRIPT="$CONFIG_DIR/shellsense.zsh"
+install_shell_file "zsh/shellsense.zsh" "$ZSH_SCRIPT"
 if [[ -f "$HOME/.zshrc" ]] || command -v zsh >/dev/null 2>&1; then
     touch "$HOME/.zshrc"
-    sed -i '/terminal-assistant\.zsh/d' "$HOME/.zshrc" 2>/dev/null || true
-    if ! grep -q "shellsense.zsh" "$HOME/.zshrc"; then
-        echo -e "\n# ShellSense\n$ZSH_LINE" >> "$HOME/.zshrc"
-    fi
-    echo -e "${GREEN}✓ Zsh integration enabled in ~/.zshrc${RESET}"
+    sed -i '/shellsense\.zsh/d' "$HOME/.zshrc" 2>/dev/null || true
+    sed -i '/# ShellSense/d' "$HOME/.zshrc" 2>/dev/null || true
+    echo -e "\n# ShellSense\n[ -f \"$ZSH_SCRIPT\" ] && source \"$ZSH_SCRIPT\"" >> "$HOME/.zshrc"
+    echo -e "${GREEN}✓ Zsh integration enabled (~/.zshrc)${RESET}"
 fi
 
-# 6. Service configuration (Systemd user service or background daemon)
+# 5. Background Daemon / Service
 if command -v systemctl >/dev/null 2>&1; then
     SYSTEMD_DIR="$HOME/.config/systemd/user"
     mkdir -p "$SYSTEMD_DIR"
@@ -131,22 +190,24 @@ Environment=PATH=$BIN_DIR:$PATH
 WantedBy=default.target
 EOF
     systemctl --user daemon-reload
-    systemctl --user enable --now shellsense.service
-    echo -e "${GREEN}✓ Systemd user service shellsense.service started and enabled${RESET}"
+    systemctl --user enable --now shellsense.service >/dev/null 2>&1 || true
+    echo -e "${GREEN}✓ Systemd user service enabled and started${RESET}"
 else
-    echo -e "${YELLOW}Starting background daemon...${RESET}"
-    pkill -f "shellsensd" 2>/dev/null || true
     nohup "$BIN_DIR/shellsensd" >/dev/null 2>&1 &
     echo -e "${GREEN}✓ Background daemon started${RESET}"
 fi
 
-# 7. Verification
+# 6. Verification
 echo ""
-echo -e "${BOLD}${GREEN}=== ShellSense Successfully Installed! ===${RESET}"
-echo -e "Testing CLI: 'instal chrome' -> ${CYAN}$("$BIN_DIR/shellsense" suggest --raw "instal chrome")${RESET}"
-echo -e "Short command: ${CYAN}ss${RESET} or ${CYAN}shellsense${RESET}"
+echo -e "${BOLD}${GREEN}====================================================${RESET}"
+echo -e "${BOLD}${GREEN}  ShellSense Successfully Installed! 🚀${RESET}"
+echo -e "${BOLD}${GREEN}====================================================${RESET}"
+echo -e "Testing: ${CYAN}$("$BIN_DIR/shellsense" suggest --raw "instal chrome")${RESET}"
 echo ""
-echo -e "Usage:"
-echo -e "  - Open a new terminal tab or reload your shell."
-echo -e "  - Type an intent like ${CYAN}instal chrome${RESET} or ${CYAN}check gpu${RESET} and press ${BOLD}Tab${RESET} or ${BOLD}Right Arrow${RESET}."
-echo -e "  - Press ${BOLD}Tab${RESET} again to cycle candidates, or ${BOLD}Esc${RESET} to revert."
+echo -e "How to use:"
+echo -e "  1. Open a new terminal tab (or reload your shell)."
+echo -e "  2. Type any intent: ${CYAN}instal chrome${RESET}, ${CYAN}check gpu${RESET}, ${CYAN}restart audio${RESET}"
+echo -e "  3. ShellSense displays a ghost preview ${CYAN}→ command${RESET} automatically!"
+echo -e "  4. Hit ${BOLD}Tab${RESET} or ${BOLD}Enter${RESET} to run."
+echo ""
+echo -e "Short CLI command: ${CYAN}ss${RESET} (e.g. ${BOLD}ss status${RESET}, ${BOLD}ss suggest \"intent\"${RESET})"
