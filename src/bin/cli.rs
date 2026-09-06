@@ -12,7 +12,7 @@ use tokio::net::UnixStream;
 #[derive(Parser)]
 #[command(name = "shellsense")]
 #[command(about = "ShellSense: IntelliSense-like terminal command assistant and autocomplete")]
-#[command(version = "0.1.0")]
+#[command(version)]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
@@ -91,6 +91,13 @@ enum Commands {
 
     /// Clear daemon suggestion cache
     ClearCache,
+
+    /// Update ShellSense to the latest release from GitHub
+    Update {
+        /// Force re-installation even if already on the latest version
+        #[arg(long, short)]
+        force: bool,
+    },
 }
 
 #[tokio::main]
@@ -271,6 +278,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 Err(e) => eprintln!("Could not reach daemon: {}", e),
             }
         }
+
+        Commands::Update { force } => {
+            run_self_update(force).await?;
+        }
     }
 
     Ok(())
@@ -308,4 +319,178 @@ where
             Ok(fallback())
         }
     }
+}
+
+async fn run_self_update(force: bool) -> Result<(), Box<dyn std::error::Error>> {
+    let current_version = env!("CARGO_PKG_VERSION");
+    println!("🔍 Checking for ShellSense updates (current version: v{})...", current_version);
+
+    let client = reqwest::Client::builder()
+        .user_agent("ShellSense-Updater")
+        .timeout(std::time::Duration::from_secs(15))
+        .build()?;
+
+    let api_url = "https://api.github.com/repos/Prithibi17/ShellSense/releases/latest";
+    let resp = client.get(api_url).send().await;
+
+    let (latest_tag, download_url) = match resp {
+        Ok(res) if res.status().is_success() => {
+            let json: serde_json::Value = res.json().await?;
+            let tag = json["tag_name"].as_str().unwrap_or("").trim_start_matches('v').to_string();
+            let mut dl = format!(
+                "https://github.com/Prithibi17/ShellSense/releases/download/v{}/shellsense-linux-x86_64.tar.gz",
+                tag
+            );
+            if let Some(assets) = json["assets"].as_array() {
+                for a in assets {
+                    if let Some(name) = a["name"].as_str() {
+                        if name.contains("linux-x86_64") && name.ends_with(".tar.gz") {
+                            if let Some(browser_dl) = a["browser_download_url"].as_str() {
+                                dl = browser_dl.to_string();
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+            (tag, dl)
+        }
+        _ => {
+            eprintln!("Notice: GitHub API unreachable or rate-limited. Falling back to latest GitHub release...");
+            (
+                "latest".to_string(),
+                "https://github.com/Prithibi17/ShellSense/releases/latest/download/shellsense-linux-x86_64.tar.gz".to_string(),
+            )
+        }
+    };
+
+    if !force && !latest_tag.is_empty() && latest_tag != "latest" && latest_tag == current_version {
+        println!("✓ ShellSense is already on the latest version (v{}).", current_version);
+        println!("Tip: Run 'ss update --force' to force re-download and re-install.");
+        return Ok(());
+    }
+
+    println!("⚡ Updating ShellSense to v{}...", if latest_tag == "latest" { "latest" } else { &latest_tag });
+    println!("   Downloading {}", download_url);
+
+    let dl_resp = client.get(&download_url).send().await?;
+    if !dl_resp.status().is_success() {
+        println!("Binary download returned {}, falling back to universal installer...", dl_resp.status());
+        let status = std::process::Command::new("bash")
+            .arg("-c")
+            .arg("curl -fsSL https://raw.githubusercontent.com/Prithibi17/ShellSense/main/install.sh | bash")
+            .status()?;
+        if !status.success() {
+            return Err("Universal installer failed to complete update".into());
+        }
+        return Ok(());
+    }
+
+    let bytes = dl_resp.bytes().await?;
+    let tmp_dir = std::env::temp_dir().join(format!("shellsense-update-{}", std::process::id()));
+    tokio::fs::create_dir_all(&tmp_dir).await?;
+    let tar_path = tmp_dir.join("shellsense.tar.gz");
+    tokio::fs::write(&tar_path, &bytes).await?;
+
+    // Extract archive using tar
+    let extract_status = std::process::Command::new("tar")
+        .arg("-xzf")
+        .arg(&tar_path)
+        .arg("-C")
+        .arg(&tmp_dir)
+        .status()?;
+
+    if !extract_status.success() {
+        let _ = tokio::fs::remove_dir_all(&tmp_dir).await;
+        return Err("Failed to extract update tarball archive".into());
+    }
+
+    // Stop daemon during binary replacement
+    let _ = std::process::Command::new("systemctl")
+        .args(["--user", "stop", "shellsense.service"])
+        .status();
+    let _ = std::process::Command::new("pkill")
+        .arg("-f")
+        .arg("shellsensd")
+        .status();
+
+    let home = dirs::home_dir().ok_or("Could not resolve user home directory")?;
+    let bin_dir = home.join(".local/bin");
+    tokio::fs::create_dir_all(&bin_dir).await?;
+
+    let new_cli = tmp_dir.join("shellsense");
+    let new_daemon = tmp_dir.join("shellsensd");
+
+    if new_cli.exists() {
+        tokio::fs::copy(&new_cli, bin_dir.join("shellsense")).await?;
+        let _ = std::process::Command::new("chmod")
+            .args(["+x", bin_dir.join("shellsense").to_str().unwrap()])
+            .status();
+        let _ = std::process::Command::new("ln")
+            .args(["-sf", bin_dir.join("shellsense").to_str().unwrap(), bin_dir.join("ss").to_str().unwrap()])
+            .status();
+    }
+    if new_daemon.exists() {
+        tokio::fs::copy(&new_daemon, bin_dir.join("shellsensd")).await?;
+        let _ = std::process::Command::new("chmod")
+            .args(["+x", bin_dir.join("shellsensd").to_str().unwrap()])
+            .status();
+    }
+
+    // Also update in ~/.cargo/bin if present
+    let cargo_bin = home.join(".cargo/bin");
+    if cargo_bin.exists() {
+        if new_cli.exists() {
+            let _ = tokio::fs::copy(&new_cli, cargo_bin.join("shellsense")).await;
+            let _ = std::process::Command::new("ln")
+                .args(["-sf", cargo_bin.join("shellsense").to_str().unwrap(), cargo_bin.join("ss").to_str().unwrap()])
+                .status();
+        }
+        if new_daemon.exists() {
+            let _ = tokio::fs::copy(&new_daemon, cargo_bin.join("shellsensd")).await;
+        }
+    }
+
+    // Refresh shell integration scripts
+    let fish_dest = home.join(".config/fish/conf.d/shellsense.fish");
+    if fish_dest.parent().map_or(false, |p| p.exists()) {
+        if let Ok(resp) = client.get("https://raw.githubusercontent.com/Prithibi17/ShellSense/main/fish/shellsense.fish").send().await {
+            if let Ok(text) = resp.text().await {
+                let _ = tokio::fs::write(&fish_dest, text).await;
+            }
+        }
+    }
+    let bash_dest = home.join(".config/shellsense/shellsense.bash");
+    if bash_dest.parent().map_or(false, |p| p.exists()) {
+        if let Ok(resp) = client.get("https://raw.githubusercontent.com/Prithibi17/ShellSense/main/bash/shellsense.bash").send().await {
+            if let Ok(text) = resp.text().await {
+                let _ = tokio::fs::write(&bash_dest, text).await;
+            }
+        }
+    }
+    let zsh_dest = home.join(".config/shellsense/shellsense.zsh");
+    if zsh_dest.parent().map_or(false, |p| p.exists()) {
+        if let Ok(resp) = client.get("https://raw.githubusercontent.com/Prithibi17/ShellSense/main/zsh/shellsense.zsh").send().await {
+            if let Ok(text) = resp.text().await {
+                let _ = tokio::fs::write(&zsh_dest, text).await;
+            }
+        }
+    }
+
+    // Restart daemon
+    let _ = std::process::Command::new("systemctl")
+        .args(["--user", "daemon-reload"])
+        .status();
+    let _ = std::process::Command::new("systemctl")
+        .args(["--user", "restart", "shellsense.service"])
+        .status();
+
+    let _ = tokio::fs::remove_dir_all(&tmp_dir).await;
+
+    println!("\n🚀 ShellSense successfully updated to v{}!", if latest_tag == "latest" { "latest" } else { &latest_tag });
+    println!("   Binaries updated in: {}", bin_dir.display());
+    println!("   Active background daemon restarted.");
+    println!("   Shell integrations refreshed.");
+
+    Ok(())
 }

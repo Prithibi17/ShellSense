@@ -197,3 +197,124 @@ fn test_universal_hardware_adaptation() {
     assert_eq!(sugs[0].command, "powerprofilesctl set performance");
 }
 
+#[test]
+fn test_massive_phrasing_variations_and_typos() {
+    let ctx = make_context(vec![], false);
+
+    // 1. Pervasive package typos, word order, and conversational preambles
+    let sugs = match_deterministic("isntall chrime", &ctx);
+    assert!(!sugs.is_empty());
+    assert_eq!(sugs[0].command, "paru -S google-chrome");
+
+    let sugs = match_deterministic("chorme install", &ctx);
+    assert!(!sugs.is_empty());
+    assert_eq!(sugs[0].command, "paru -S google-chrome");
+
+    let sugs = match_deterministic("how to isntall google chrome", &ctx);
+    assert!(!sugs.is_empty());
+    assert_eq!(sugs[0].command, "paru -S google-chrome");
+
+    let sugs = match_deterministic("can you please install discord", &ctx);
+    assert!(!sugs.is_empty());
+    assert_eq!(sugs[0].command, "sudo pacman -S discord");
+
+    let sugs = match_deterministic("dicsord get", &ctx);
+    assert!(!sugs.is_empty());
+    assert_eq!(sugs[0].command, "sudo pacman -S discord");
+
+    let sugs = match_deterministic("download vscod", &ctx);
+    assert!(!sugs.is_empty());
+    assert_eq!(sugs[0].command, "sudo pacman -S code");
+
+    // 2. Audio variations, word order, and typos
+    let sugs = match_deterministic("sound restart", &ctx);
+    assert!(!sugs.is_empty());
+    assert_eq!(sugs[0].command, "systemctl --user restart pipewire pipewire-pulse wireplumber");
+
+    let sugs = match_deterministic("restrt audo", &ctx);
+    assert!(!sugs.is_empty());
+    assert_eq!(sugs[0].command, "systemctl --user restart pipewire pipewire-pulse wireplumber");
+
+    let sugs = match_deterministic("can you fix my sound please", &ctx);
+    assert!(!sugs.is_empty());
+    assert_eq!(sugs[0].command, "systemctl --user restart pipewire pipewire-pulse wireplumber");
+
+    // 3. GPU variations and typos
+    let sugs = match_deterministic("chekc gpui", &ctx);
+    assert!(!sugs.is_empty());
+    assert_eq!(sugs[0].command, "nvidia-smi");
+
+    let sugs = match_deterministic("how is my nvda", &ctx);
+    assert!(!sugs.is_empty());
+    assert_eq!(sugs[0].command, "nvidia-smi");
+
+    let sugs = match_deterministic("gpu check", &ctx);
+    assert!(!sugs.is_empty());
+    assert_eq!(sugs[0].command, "nvidia-smi");
+
+    let sugs = match_deterministic("gpu", &ctx);
+    assert!(!sugs.is_empty());
+    assert_eq!(sugs[0].command, "nvidia-smi");
+
+    // 4. Ports: Kill vs Query, word-order invariance
+    let sugs = match_deterministic("kill port 8080", &ctx);
+    assert!(!sugs.is_empty());
+    assert_eq!(sugs[0].command, "kill -9 $(lsof -t -i:8080)");
+
+    let sugs = match_deterministic("port 8080 kill", &ctx);
+    assert!(!sugs.is_empty());
+    assert_eq!(sugs[0].command, "kill -9 $(lsof -t -i:8080)");
+
+    let sugs = match_deterministic("stop port 3000", &ctx);
+    assert!(!sugs.is_empty());
+    assert_eq!(sugs[0].command, "kill -9 $(lsof -t -i:3000)");
+
+    let sugs = match_deterministic("show ports", &ctx);
+    assert!(!sugs.is_empty());
+    assert_eq!(sugs[0].command, "ss -tulwn");
+
+    let sugs = match_deterministic("what is on port 5000", &ctx);
+    assert!(!sugs.is_empty());
+    assert_eq!(sugs[0].command, "ss -ltnp | grep ':5000'");
+
+    // 5. System power, reboot, shutdown typos
+    let sugs = match_deterministic("rebot", &ctx);
+    assert!(!sugs.is_empty());
+    assert_eq!(sugs[0].command, "systemctl reboot");
+
+    let sugs = match_deterministic("restrt pc", &ctx);
+    assert!(!sugs.is_empty());
+    assert_eq!(sugs[0].command, "systemctl reboot");
+
+    let sugs = match_deterministic("turn of pc", &ctx);
+    assert!(!sugs.is_empty());
+    assert_eq!(sugs[0].command, "systemctl poweroff");
+
+    let sugs = match_deterministic("pwerof", &ctx);
+    assert!(!sugs.is_empty());
+    assert_eq!(sugs[0].command, "systemctl poweroff");
+
+    // 6. ShellSense self-update intent
+    let sugs = match_deterministic("update ss", &ctx);
+    assert!(!sugs.is_empty());
+    assert_eq!(sugs[0].command, "ss update");
+
+    let sugs = match_deterministic("how to update shellsense", &ctx);
+    assert!(!sugs.is_empty());
+    assert_eq!(sugs[0].command, "ss update");
+
+    // 7. Storage and memory phrasings
+    let sugs = match_deterministic("disk space", &ctx);
+    assert!(!sugs.is_empty());
+    assert_eq!(sugs[0].command, "df -h");
+
+    let sugs = match_deterministic("ram stat", &ctx);
+    assert!(!sugs.is_empty());
+    assert_eq!(sugs[0].command, "free -h");
+
+    let sugs = match_deterministic("memory usage", &ctx);
+    assert!(!sugs.is_empty());
+    assert_eq!(sugs[0].command, "free -h");
+}
+
+

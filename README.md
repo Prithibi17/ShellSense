@@ -132,12 +132,15 @@ Simply type natural intent or shorthand in your terminal prompt:
 
 | You Type | Hit <kbd>Tab</kbd> | ShellSense Suggestion |
 | :--- | :--- | :--- |
-| `instal chrome` | ⇥ | `paru -S google-chrome` (Arch) / `sudo apt install google-chrome-stable` (Debian) |
-| `check gpu` | ⇥ | `nvidia-smi` *(on NVIDIA)* or `radeontop` *(on AMD)* |
-| `restart audio` | ⇥ | `systemctl --user restart pipewire wireplumber` |
-| `show ip` | ⇥ | `ip --brief address` |
+| `how to isntall google chrome` | ⇥ | `paru -S google-chrome` (Arch) / `sudo apt install google-chrome-stable` (Debian) |
+| `chorme install` | ⇥ | `paru -S google-chrome` |
+| `chekc gpui` / `how is my nvda` | ⇥ | `nvidia-smi` *(on NVIDIA)* or `radeontop` *(on AMD)* |
+| `sound restart` / `restrt audo` | ⇥ | `systemctl --user restart pipewire wireplumber` |
+| `kill port 8080` / `port 8080 kill` | ⇥ | `kill -9 $(lsof -t -i:8080)` |
+| `show ip` / `my ip` | ⇥ | `ip -br a` |
 | `clean orphans` | ⇥ | `paru -Rns (pacman -Qtdq)` |
-| `battery health` | ⇥ | `upower -i /org/freedesktop/UPower/devices/battery_BAT0` |
+| `rebot` / `restrt pc` | ⇥ | `systemctl reboot` |
+| `update ss` / `shellsense update` | ⇥ | `ss update` |
 | `extract archive` | ⇥ | `unzip "my_file.zip"` *(context-aware: detects `.zip` in cwd)* |
 | `run project` | ⇥ | `cargo run` *(context-aware: detects `Cargo.toml` in cwd)* |
 
@@ -149,10 +152,13 @@ ShellSense provides the `shellsense` command and a short alias `ss`:
 
 ```bash
 # Query suggestion from the command line
-ss suggest "instal discord"
+ss suggest "how to isntall google chrome"
 
 # Print raw command (perfect for scripts)
-ss suggest --raw "check memory"
+ss suggest --raw "kill port 8080"
+
+# Check for updates and update ShellSense instantly
+ss update
 
 # View daemon status and auto-detected hardware
 ss status

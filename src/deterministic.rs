@@ -1,5 +1,5 @@
 use crate::context::{AudioSystem, DistroFamily, FormFactor, GpuVendor, InitSystem, DisplayServer, SystemContext};
-use crate::fuzzy::{fuzzy_find_best, matches_fuzzy};
+use crate::fuzzy::{clean_intent, classify_action_token, fuzzy_find_best, matches_fuzzy, ActionVerb};
 use crate::protocol::{CandidateSuggestion, RiskLevel};
 use regex::Regex;
 
@@ -10,27 +10,24 @@ pub fn match_deterministic(input: &str, ctx: &SystemContext) -> Vec<CandidateSug
         return suggestions;
     }
 
-    // 1. Power, Reboot, Shutdown & Session Controls (Init-system aware)
-    if let Some(sugs) = match_system_power_and_session(&lower, ctx) {
-        return sugs;
-    }
+    let (cleaned, tokens) = clean_intent(&lower);
 
-    // 2. Shell Typos & Quick Directory Navigation
+    // 1. Direct Shell Typos & Quick Directory Navigation
     if let Some(sugs) = match_shell_typos_and_nav(&lower) {
         return sugs;
     }
 
-    // 3. Standard Command Flags & Smart Parameter Completion
+    // 2. Standard Command Flags & Smart Parameter Completion
     if let Some(sugs) = match_command_tool_flags(&lower) {
         return sugs;
     }
 
-    // 4. Developer Tools, Python venv, Rust, Docker & Shell Environment
+    // 3. Developer Tools, Python venv, Rust, Docker & Shell Environment
     if let Some(sugs) = match_developer_and_env(&lower, ctx) {
         return sugs;
     }
 
-    // 5. Path-Aware Archive Extraction
+    // 4. Path-Aware Archive Extraction
     if lower.starts_with("extract") || lower.starts_with("unzip") || lower.starts_with("untar") || lower.starts_with("decompress") {
         if let Some(sug) = match_archive_extraction(&lower, ctx) {
             suggestions.push(sug);
@@ -38,59 +35,69 @@ pub fn match_deterministic(input: &str, ctx: &SystemContext) -> Vec<CandidateSug
         }
     }
 
-    // 6. Path-Aware Project Execution & Building
+    // 5. Path-Aware Project Execution & Building
     if let Some(sugs) = match_path_aware_projects(&lower, ctx) {
         return sugs;
     }
 
-    // 7. Git Context Operations
-    if ctx.is_git_repo {
+    // 6. Git Context Operations
+    if ctx.is_git_repo || lower.starts_with("git") {
         if let Some(sugs) = match_git_workflow(&lower, ctx) {
             return sugs;
         }
     }
 
-    // 8. Universal Package Management (pacman, apt, dnf, zypper, apk, xbps, etc.)
+    // 7. Generalized Semantic Intent Engine (typo-tolerant, word-order invariant, multi-distro)
+    if let Some(sugs) = match_semantic_intent(&lower, &cleaned, &tokens, ctx) {
+        return sugs;
+    }
+
+    // 8. Power, Reboot, Shutdown & Session Controls (Legacy fallback)
+    if let Some(sugs) = match_system_power_and_session(&lower, ctx) {
+        return sugs;
+    }
+
+    // 9. Universal Package Management (Legacy fallback)
     if let Some(sugs) = match_package_management(&lower, ctx) {
         return sugs;
     }
 
-    // 9. Flatpak Management
+    // 10. Flatpak Management (Legacy fallback)
     if let Some(sugs) = match_flatpak_operations(&lower) {
         return sugs;
     }
 
-    // 10. Hardware, GPU (NVIDIA / AMD / Intel), Battery, Backlight & Audio
+    // 11. Hardware, GPU (NVIDIA / AMD / Intel), Battery, Backlight & Audio (Legacy fallback)
     if let Some(sugs) = match_hardware_and_laptop(&lower, ctx) {
         return sugs;
     }
 
-    // 11. Services & System Administration (systemd / OpenRC / runit aware)
+    // 12. Services & System Administration (systemd / OpenRC / runit aware)
     if let Some(sugs) = match_services_and_init(&lower, ctx) {
         return sugs;
     }
 
-    // 12. Network, Ports, IP & Connectivity
+    // 13. Network, Ports, IP & Connectivity (Legacy fallback)
     if let Some(sugs) = match_network_and_ports(&lower) {
         return sugs;
     }
 
-    // 13. Files, Storage, Disks, Search & Permissions
+    // 14. Files, Storage, Disks, Search & Permissions (Legacy fallback)
     if let Some(sugs) = match_files_and_storage(&lower, ctx) {
         return sugs;
     }
 
-    // 14. Process Management, Performance & Memory
+    // 15. Process Management, Performance & Memory (Legacy fallback)
     if let Some(sugs) = match_processes_and_performance(&lower) {
         return sugs;
     }
 
-    // 15. Desktop Environment & Window Manager (Hyprland, Sway, GNOME, KDE, X11)
+    // 16. Desktop Environment & Window Manager (Hyprland, Sway, GNOME, KDE, X11)
     if let Some(sugs) = match_desktop_and_window_manager(&lower, ctx) {
         return sugs;
     }
 
-    // 16. Distro-Specific Extras (Btrfs, Snapper, CachyOS)
+    // 17. Distro-Specific Extras (Btrfs, Snapper, CachyOS)
     if ctx.distro_family == DistroFamily::Arch {
         if let Some(sugs) = match_btrfs_and_cachyos(&lower) {
             return sugs;
@@ -98,6 +105,441 @@ pub fn match_deterministic(input: &str, ctx: &SystemContext) -> Vec<CandidateSug
     }
 
     suggestions
+}
+
+// -----------------------------------------------------------------------------
+// 0. Generalized Semantic Intent Engine
+// -----------------------------------------------------------------------------
+fn match_semantic_intent(
+    _lower: &str,
+    cleaned: &str,
+    tokens: &[String],
+    ctx: &SystemContext,
+) -> Option<Vec<CandidateSuggestion>> {
+    let mut sugs = Vec::new();
+
+    // 0. ShellSense Self-Commands (Update, Status)
+    if tokens.iter().any(|t| t == "shellsense" || t == "ss") {
+        if tokens.iter().any(|t| classify_action_token(t) == Some(ActionVerb::Update)) {
+            sugs.push(sug("ss update", "Update ShellSense to the latest GitHub release", 0.99, RiskLevel::Low, None, "ShellSense"));
+            return Some(sugs);
+        }
+        if tokens.iter().any(|t| classify_action_token(t) == Some(ActionVerb::Query)) || tokens.iter().any(|t| t == "status") {
+            sugs.push(sug("ss status", "Check ShellSense daemon status and AI engine health", 0.99, RiskLevel::Low, None, "ShellSense"));
+            return Some(sugs);
+        }
+    }
+
+    // 1. System Session & Power Controls (Reboot, Shutdown, Sleep, Lock, Logout)
+    let is_systemd = ctx.init_system == InitSystem::Systemd;
+    let is_reboot = tokens.iter().any(|t| classify_action_token(t) == Some(ActionVerb::PowerReboot))
+        || (tokens.iter().any(|t| classify_action_token(t) == Some(ActionVerb::Restart))
+            && tokens.iter().any(|t| ["pc", "laptop", "computer", "system", "machine", "box"].contains(&t.as_str())))
+        || cleaned == "reboot" || cleaned == "rebot" || cleaned == "restart system";
+    if is_reboot {
+        let cmd = if is_systemd { "systemctl reboot" } else { "sudo reboot" };
+        sugs.push(sug(cmd, "Reboot and restart the operating system", 0.99, RiskLevel::Medium, Some("Reboots system immediately".to_string()), "System"));
+        return Some(sugs);
+    }
+
+    let is_shutdown = tokens.iter().any(|t| classify_action_token(t) == Some(ActionVerb::PowerShutdown))
+        || (tokens.iter().any(|t| classify_action_token(t) == Some(ActionVerb::Kill))
+            && tokens.iter().any(|t| ["pc", "laptop", "computer", "system", "machine", "power"].contains(&t.as_str())))
+        || (tokens.iter().any(|t| t == "turn" || t == "shut") && tokens.iter().any(|t| t == "off" || t == "of" || t == "down"))
+        || cleaned == "shutdown" || cleaned == "poweroff" || cleaned == "power off" || cleaned == "pwerof" || cleaned == "turn off" || cleaned == "shut down";
+    if is_shutdown {
+        let cmd = if is_systemd { "systemctl poweroff" } else { "sudo poweroff" };
+        sugs.push(sug(cmd, "Safely shut down and power off the machine", 0.99, RiskLevel::Destructive, Some("Powers off machine immediately".to_string()), "System"));
+        return Some(sugs);
+    }
+
+    let is_sleep = tokens.iter().any(|t| classify_action_token(t) == Some(ActionVerb::PowerSleep))
+        || cleaned == "sleep" || cleaned == "suspend";
+    if is_sleep {
+        let cmd = if is_systemd { "systemctl suspend" } else { "sudo zzz || sudo pm-suspend" };
+        sugs.push(sug(cmd, "Suspend system into low-power RAM sleep mode", 0.99, RiskLevel::Low, None, "System"));
+        return Some(sugs);
+    }
+
+    let is_hibernate = cleaned == "hibernate" || cleaned == "hibarnate" || cleaned == "hibernate pc";
+    if is_hibernate {
+        let cmd = if is_systemd { "systemctl hibernate" } else { "sudo ZZZ || sudo pm-hibernate" };
+        sugs.push(sug(cmd, "Hibernate system state onto disk swap and power down", 0.98, RiskLevel::Medium, None, "System"));
+        return Some(sugs);
+    }
+
+    let is_lock = tokens.iter().any(|t| classify_action_token(t) == Some(ActionVerb::PowerLock))
+        || cleaned == "lock" || cleaned == "lock screen" || cleaned == "lockscreen";
+    if is_lock {
+        let cmd = match &ctx.display_server {
+            DisplayServer::Wayland(wm) if wm == "hyprland" => "hyprlock",
+            DisplayServer::Wayland(wm) if wm == "sway" => "swaylock",
+            DisplayServer::Wayland(wm) if wm == "gnome" => "loginctl lock-session",
+            DisplayServer::Wayland(wm) if wm == "kde" => "loginctl lock-session",
+            DisplayServer::X11 => "xflock4 || i3lock || loginctl lock-session",
+            _ => "loginctl lock-session",
+        };
+        sugs.push(sug(cmd, "Lock active desktop screen session", 0.99, RiskLevel::Low, None, "Desktop"));
+        return Some(sugs);
+    }
+
+    let is_logout = tokens.iter().any(|t| classify_action_token(t) == Some(ActionVerb::PowerLogout))
+        || cleaned == "logout" || cleaned == "exit desktop" || cleaned == "quit desktop";
+    if is_logout {
+        let cmd = match &ctx.display_server {
+            DisplayServer::Wayland(wm) if wm == "hyprland" => "hyprctl dispatch exit",
+            DisplayServer::Wayland(wm) if wm == "sway" => "swaymsg exit",
+            _ => "loginctl terminate-user $USER",
+        };
+        sugs.push(sug(cmd, "Exit desktop session and return to display manager", 0.98, RiskLevel::Medium, None, "Desktop"));
+        return Some(sugs);
+    }
+
+    // 2. Hardware: GPU (NVIDIA / AMD / Intel)
+    let is_gpu = tokens.iter().any(|t| {
+        let s = t.as_str();
+        s == "gpu" || s == "gpui" || s == "nvidia" || s == "nvda" || s == "nvdia" || s == "radeon"
+            || s == "amd" || s == "geforce" || s == "rtx" || s == "gtx" || s == "vram"
+            || matches_fuzzy(s, "nvidia", 0.75) || matches_fuzzy(s, "graphics", 0.75)
+    });
+    if is_gpu {
+        match ctx.gpu_vendor {
+            GpuVendor::Nvidia => {
+                sugs.push(sug("nvidia-smi", "Display NVIDIA GPU utilization, temperature, and VRAM allocation", 0.99, RiskLevel::Low, None, "Hardware"));
+                sugs.push(sug("watch -n 1 nvidia-smi", "Monitor NVIDIA GPU stats live every second", 0.94, RiskLevel::Low, None, "Hardware"));
+            }
+            GpuVendor::Amd => {
+                sugs.push(sug("radeontop", "Monitor AMD Radeon GPU utilization and VRAM in real-time", 0.99, RiskLevel::Low, None, "Hardware"));
+                sugs.push(sug("rocm-smi", "Query AMD ROCm GPU clocks, temperature, and power metrics", 0.94, RiskLevel::Low, None, "Hardware"));
+            }
+            GpuVendor::Intel => {
+                sugs.push(sug("sudo intel_gpu_top", "Monitor Intel Arc and integrated GPU engine render metrics", 0.99, RiskLevel::Low, None, "Hardware"));
+            }
+            GpuVendor::Generic => {
+                sugs.push(sug("lspci -nnk | grep -A4 -E \"VGA|3D|Display\"", "Inspect graphics hardware and active kernel drivers", 0.98, RiskLevel::Low, None, "Hardware"));
+            }
+        }
+        sugs.push(sug("lspci -nnk | grep -A4 -E \"VGA|3D|Display\"", "Inspect graphics controller and active kernel drivers", 0.88, RiskLevel::Low, None, "Hardware"));
+        return Some(sugs);
+    }
+
+    // 3. Audio / Sound (PipeWire, PulseAudio, ALSA)
+    let is_audio = tokens.iter().any(|t| {
+        let s = t.as_str();
+        s == "audio" || s == "audi" || s == "sound" || s == "snd" || s == "pipewire"
+            || s == "pipwire" || s == "pulseaudio" || s == "pulse" || s == "wireplumber"
+            || matches_fuzzy(s, "audio", 0.75) || matches_fuzzy(s, "sound", 0.75)
+    });
+    if is_audio {
+        let is_query_action = tokens.iter().any(|t| classify_action_token(t) == Some(ActionVerb::Query))
+            && !tokens.iter().any(|t| classify_action_token(t) == Some(ActionVerb::Restart) || classify_action_token(t) == Some(ActionVerb::Fix));
+        if is_query_action {
+            let (cmd, desc) = match ctx.audio_system {
+                AudioSystem::Pipewire => ("wpctl status", "Display active PipeWire audio endpoints and volume"),
+                AudioSystem::Pulseaudio => ("pactl list sinks short", "List active PulseAudio audio output sinks"),
+                _ => ("alsamixer", "Open interactive ALSA sound mixer interface"),
+            };
+            sugs.push(sug(cmd, desc, 0.98, RiskLevel::Low, None, "Audio"));
+            return Some(sugs);
+        } else {
+            let (cmd, desc) = match ctx.audio_system {
+                AudioSystem::Pipewire => (
+                    "systemctl --user restart pipewire pipewire-pulse wireplumber",
+                    "Restart modern PipeWire multimedia sound server & session manager",
+                ),
+                AudioSystem::Pulseaudio => (
+                    "pulseaudio -k && pulseaudio --start",
+                    "Kill and respawn PulseAudio audio daemon",
+                ),
+                _ => (
+                    "sudo alsactl restore",
+                    "Restore ALSA soundcard driver states",
+                ),
+            };
+            sugs.push(sug(cmd, desc, 0.99, RiskLevel::Low, None, "Audio"));
+            return Some(sugs);
+        }
+    }
+
+    // 4. Laptop Battery, Fan Profiles & Backlight
+    let is_battery = tokens.iter().any(|t| {
+        let s = t.as_str();
+        s == "battery" || s == "bat" || s == "batry" || s == "charge" || s == "charging"
+            || matches_fuzzy(s, "battery", 0.75)
+    });
+    if is_battery {
+        if tokens.iter().any(|t| ["limit", "80", "care", "health"].contains(&t.as_str())) && ctx.has_asusctl {
+            sugs.push(sug("asusctl -c 80", "Set battery charge threshold to 80% to preserve lithium health", 0.99, RiskLevel::Low, None, "Hardware"));
+            return Some(sugs);
+        }
+        sugs.push(sug("upower -i $(upower -e | grep 'BAT')", "Display detailed battery health, discharge rate, and cycle count", 0.99, RiskLevel::Low, None, "Hardware"));
+        sugs.push(sug("cat /sys/class/power_supply/BAT*/capacity 2>/dev/null || acpi -b", "Read current battery percentage directly from ACPI sysfs", 0.94, RiskLevel::Low, None, "Hardware"));
+        return Some(sugs);
+    }
+
+    // Fan / Power profiles
+    let is_fan_profile = tokens.iter().any(|t| ["fan", "turbo", "profile", "performance", "powersave"].contains(&t.as_str()));
+    if is_fan_profile {
+        if tokens.iter().any(|t| ["turbo", "performance", "high", "max"].contains(&t.as_str())) {
+            if ctx.has_asusctl {
+                sugs.push(sug("asusctl profile -P Performance", "Activate ASUS ROG/TUF Performance fan & thermal profile", 0.99, RiskLevel::Low, None, "Hardware"));
+            } else {
+                sugs.push(sug("powerprofilesctl set performance", "Engage high performance power profile via system power-profiles-daemon", 0.99, RiskLevel::Low, None, "Hardware"));
+            }
+            return Some(sugs);
+        }
+        if tokens.iter().any(|t| ["quiet", "silent", "powersave", "eco"].contains(&t.as_str())) {
+            if ctx.has_asusctl {
+                sugs.push(sug("asusctl profile -P Quiet", "Activate ASUS ROG/TUF Quiet fan & thermal profile", 0.99, RiskLevel::Low, None, "Hardware"));
+            } else {
+                sugs.push(sug("powerprofilesctl set power-saver", "Engage battery-saving power profile via power-profiles-daemon", 0.99, RiskLevel::Low, None, "Hardware"));
+            }
+            return Some(sugs);
+        }
+    }
+
+    // 5. Ports & Network Connections
+    if let Some((port, is_kill)) = parse_port_intent(cleaned, tokens) {
+        if is_kill {
+            sugs.push(sug(
+                &format!("kill -9 $(lsof -t -i:{})", port),
+                &format!("Forcefully terminate process listening on port {}", port),
+                0.99,
+                RiskLevel::Destructive,
+                Some(format!("⚠ Terminates all processes bound to port {}.", port)),
+                "Network",
+            ));
+            sugs.push(sug(
+                &format!("fuser -k {}/tcp", port),
+                &format!("Kill any process occupying TCP port {}", port),
+                0.95,
+                RiskLevel::Destructive,
+                Some(format!("⚠ Kills process on TCP port {}.", port)),
+                "Network",
+            ));
+        } else {
+            sugs.push(sug(
+                &format!("ss -ltnp | grep ':{}'", port),
+                &format!("Find listening process bound to TCP port {}", port),
+                0.99,
+                RiskLevel::Low,
+                None,
+                "Network",
+            ));
+            sugs.push(sug(
+                &format!("fuser {}/tcp", port),
+                &format!("List process ID occupying TCP port {}", port),
+                0.92,
+                RiskLevel::Low,
+                None,
+                "Network",
+            ));
+        }
+        return Some(sugs);
+    }
+
+    let is_ports_general = tokens.iter().any(|t| ["port", "ports", "prt", "prts", "sockets"].contains(&t.as_str()))
+        && (tokens.iter().any(|t| ["open", "listening", "listen", "check", "show", "list"].contains(&t.as_str())) || tokens.len() == 1);
+    if is_ports_general {
+        sugs.push(sug("ss -tulwn", "List all listening TCP and UDP sockets and port numbers", 0.99, RiskLevel::Low, None, "Network"));
+        sugs.push(sug("sudo lsof -i -P -n | grep LISTEN", "Inspect all listening sockets with owning process names", 0.94, RiskLevel::Low, None, "Network"));
+        return Some(sugs);
+    }
+
+    // IP Address & WiFi
+    let is_public_ip = tokens.iter().any(|t| t == "public" || t == "external" || t == "wan")
+        && tokens.iter().any(|t| ["ip", "address"].contains(&t.as_str()));
+    if is_public_ip {
+        sugs.push(sug("curl -s ifconfig.me", "Query and display current public WAN IP address", 0.99, RiskLevel::Low, None, "Network"));
+        return Some(sugs);
+    }
+
+    let is_ip = tokens.iter().any(|t| ["ip", "myip"].contains(&t.as_str()))
+        || (tokens.iter().any(|t| ["local", "network", "lan", "net"].contains(&t.as_str())) && tokens.iter().any(|t| t == "ip"));
+    if is_ip {
+        sugs.push(sug("ip -br a", "Show brief list of network interfaces and assigned local IP addresses", 0.99, RiskLevel::Low, None, "Network"));
+        sugs.push(sug("curl -s ifconfig.me", "Query and display current public WAN IP address", 0.95, RiskLevel::Low, None, "Network"));
+        return Some(sugs);
+    }
+
+    let is_wifi = tokens.iter().any(|t| ["wifi", "wi-fi", "wlan"].contains(&t.as_str()));
+    if is_wifi {
+        sugs.push(sug("nmcli dev wifi list", "Scan and list available Wi-Fi networks with signal strength", 0.99, RiskLevel::Low, None, "Network"));
+        return Some(sugs);
+    }
+
+    // 6. Storage, Disks, Memory & CPU
+    let is_disk = tokens.iter().any(|t| {
+        let s = t.as_str();
+        s == "disk" || s == "disks" || s == "dsk" || s == "storage" || s == "storag"
+            || s == "space" || s == "drive" || s == "drives" || s == "hdd" || s == "ssd"
+            || matches_fuzzy(s, "storage", 0.75)
+    });
+    if is_disk {
+        if tokens.iter().any(|t| ["large", "big", "heavy", "biggest", "du"].contains(&t.as_str())) {
+            sugs.push(sug("du -sh * | sort -h", "Calculate directory sizes in current path and sort ascending", 0.98, RiskLevel::Low, None, "Storage"));
+            return Some(sugs);
+        }
+        if tokens.iter().any(|t| ["disks", "drives", "partitions", "lsblk"].contains(&t.as_str())) || cleaned == "show disks" {
+            sugs.push(sug("lsblk -o NAME,SIZE,FSTYPE,MOUNTPOINTS", "Inspect block devices, partitions, and mountpoints", 0.99, RiskLevel::Low, None, "Storage"));
+            sugs.push(sug("df -h", "Display filesystem disk space usage in human-readable gigabytes", 0.96, RiskLevel::Low, None, "Storage"));
+        } else {
+            sugs.push(sug("df -h", "Display filesystem disk space usage in human-readable gigabytes", 0.99, RiskLevel::Low, None, "Storage"));
+            sugs.push(sug("lsblk -o NAME,SIZE,FSTYPE,MOUNTPOINTS", "Inspect block devices, partitions, and mountpoints", 0.96, RiskLevel::Low, None, "Storage"));
+        }
+        return Some(sugs);
+    }
+
+    let is_memory = tokens.iter().any(|t| ["ram", "memory", "mem", "swap"].contains(&t.as_str()));
+    if is_memory {
+        sugs.push(sug("free -h", "Display amount of free and used physical memory and swap", 0.99, RiskLevel::Low, None, "Memory"));
+        sugs.push(sug("btop", "Launch modern interactive resource monitor", 0.94, RiskLevel::Low, None, "Processes"));
+        return Some(sugs);
+    }
+
+    let is_cpu = tokens.iter().any(|t| ["cpu", "processor", "proc", "processes", "tasks", "top"].contains(&t.as_str()));
+    if is_cpu {
+        sugs.push(sug("ps aux --sort=-%cpu | head -n 10", "List top 10 CPU-consuming processes", 0.98, RiskLevel::Low, None, "Processes"));
+        sugs.push(sug("btop", "Launch modern interactive CPU and process monitor", 0.94, RiskLevel::Low, None, "Processes"));
+        return Some(sugs);
+    }
+
+    // 7. Universal Package Management (cross-distro, typo-tolerant, word-order invariant)
+    let pm = ctx.pkg_manager;
+
+    // System Updates
+    let is_sys_update = tokens.iter().any(|t| classify_action_token(t) == Some(ActionVerb::Update))
+        && (tokens.len() == 1 || tokens.iter().any(|t| ["system", "os", "linux", "packages", "distro", "all", "pc"].contains(&t.as_str())));
+    if is_sys_update {
+        sugs.push(sug(&pm.update_cmd(), &format!("Upgrade all system packages using {}", pm.name()), 0.99, RiskLevel::Low, None, "Packages"));
+        if ctx.distro_family == DistroFamily::Arch && pm != crate::context::PackageManager::Paru {
+            sugs.push(sug("paru -Syu", "Upgrade both official and AUR packages seamlessly", 0.94, RiskLevel::Low, None, "AUR"));
+        }
+        return Some(sugs);
+    }
+
+    // Clean cache
+    let is_clean_cache = tokens.iter().any(|t| ["cache", "caches", "pkgcache"].contains(&t.as_str()))
+        && (tokens.iter().any(|t| classify_action_token(t) == Some(ActionVerb::Clean) || classify_action_token(t) == Some(ActionVerb::Remove)) || tokens.len() == 1);
+    if is_clean_cache {
+        sugs.push(sug(&pm.clean_cache_cmd(), &format!("Clean cached package files using {}", pm.name()), 0.98, RiskLevel::Low, None, "Packages"));
+        return Some(sugs);
+    }
+
+    // Clean orphans
+    let is_clean_orphans = tokens.iter().any(|t| ["orphans", "orphan", "unused", "unneeded"].contains(&t.as_str()) || t == "autoremove");
+    if is_clean_orphans {
+        let cmd = match ctx.distro_family {
+            DistroFamily::Arch => "sudo pacman -Rns (pacman -Qtdq)",
+            DistroFamily::Debian => "sudo apt autoremove",
+            DistroFamily::Fedora => "sudo dnf autoremove",
+            DistroFamily::OpenSuse => "sudo zypper packages --orphaned",
+            DistroFamily::Void => "sudo xbps-remove -o",
+            DistroFamily::Alpine => "sudo apk cache clean",
+            _ => "sudo apt autoremove",
+        };
+        sugs.push(sug(cmd, "Remove unneeded orphaned dependencies", 0.98, RiskLevel::Destructive, Some("⚠ Removes unused package dependencies. Review list before confirming.".to_string()), "Packages"));
+        return Some(sugs);
+    }
+
+    // Arch keyring & mirrors & lock
+    if ctx.distro_family == DistroFamily::Arch {
+        if tokens.iter().any(|t| ["keys", "keyring", "gpg"].contains(&t.as_str())) && tokens.iter().any(|t| ["fix", "repair", "update", "refresh"].contains(&t.as_str())) {
+            sugs.push(sug("sudo pacman -Sy archlinux-keyring cachyos-keyring && sudo pacman-key --refresh-keys", "Refresh and populate Arch Linux and CachyOS cryptographic GPG keyrings", 0.99, RiskLevel::Medium, None, "Pacman"));
+            return Some(sugs);
+        }
+        if tokens.iter().any(|t| ["mirror", "mirrors"].contains(&t.as_str())) && tokens.iter().any(|t| ["update", "fastest", "rate"].contains(&t.as_str())) {
+            sugs.push(sug("sudo cachyos-rate-mirrors", "Benchmark and update CachyOS and Arch package mirrors", 0.98, RiskLevel::Low, None, "Pacman"));
+            return Some(sugs);
+        }
+        if tokens.iter().any(|t| ["lock", "db.lck"].contains(&t.as_str())) && tokens.iter().any(|t| ["unlock", "remove", "rm", "pacman"].contains(&t.as_str())) {
+            sugs.push(sug("sudo rm -f /var/lib/pacman/db.lck", "Remove stale pacman database lock file", 0.99, RiskLevel::Medium, None, "Pacman"));
+            return Some(sugs);
+        }
+    }
+
+    // List installed packages
+    if tokens.iter().any(|t| ["list", "show", "all"].contains(&t.as_str())) && tokens.iter().any(|t| ["packages", "installed", "pkgs"].contains(&t.as_str())) {
+        let cmd = match ctx.distro_family {
+            DistroFamily::Arch => "pacman -Qe",
+            DistroFamily::Debian => "apt list --installed",
+            DistroFamily::Fedora => "dnf list installed",
+            DistroFamily::OpenSuse => "zypper search -i",
+            DistroFamily::Alpine => "apk info",
+            DistroFamily::Void => "xbps-query -l",
+            _ => "apt list --installed",
+        };
+        sugs.push(sug(cmd, "List all explicitly installed packages on the system", 0.98, RiskLevel::Low, None, "Packages"));
+        return Some(sugs);
+    }
+
+    // Arbitrary package install
+    if let Some(pkg) = parse_install_intent(tokens) {
+        let (cmd, desc, cat) = resolve_package_command(&pkg, ctx);
+        sugs.push(sug(&cmd, &desc, 0.98, RiskLevel::Low, None, &cat));
+        return Some(sugs);
+    }
+
+    // Arbitrary package remove
+    if let Some(pkg) = parse_remove_intent(tokens) {
+        sugs.push(sug(
+            &pm.remove_cmd(&pkg),
+            &format!("Remove package '{}' using {}", pkg, pm.name()),
+            0.98,
+            RiskLevel::Destructive,
+            Some("⚠ Removes package and related dependencies. Review list before confirming.".to_string()),
+            "Packages",
+        ));
+        return Some(sugs);
+    }
+
+    // Arbitrary package search
+    if let Some(pkg) = parse_find_package_intent(tokens) {
+        sugs.push(sug(&pm.search_cmd(&pkg), &format!("Search {} repositories for '{}'", pm.name(), pkg), 0.98, RiskLevel::Low, None, "Packages"));
+        return Some(sugs);
+    }
+
+    // 8. Flatpaks
+    if tokens.iter().any(|t| t == "flatpak" || t == "flatpaks") {
+        if tokens.iter().any(|t| classify_action_token(t) == Some(ActionVerb::Update)) {
+            sugs.push(sug("flatpak update", "Update all installed Flatpak applications and runtimes", 0.99, RiskLevel::Low, None, "Flatpak"));
+            return Some(sugs);
+        }
+        if tokens.iter().any(|t| classify_action_token(t) == Some(ActionVerb::Query) || t == "list") {
+            sugs.push(sug("flatpak list --app", "List all installed Flatpak desktop applications", 0.99, RiskLevel::Low, None, "Flatpak"));
+            return Some(sugs);
+        }
+        if tokens.iter().any(|t| classify_action_token(t) == Some(ActionVerb::Clean) || t == "unused") {
+            sugs.push(sug("flatpak uninstall --unused", "Uninstall unused Flatpak runtimes to reclaim space", 0.98, RiskLevel::Low, None, "Flatpak"));
+            return Some(sugs);
+        }
+    }
+
+    // 9. Quick Directory Navigation (cd download, cd documents, etc.)
+    if let Some(sug_nav) = match_semantic_navigation(tokens) {
+        sugs.push(sug_nav);
+        return Some(sugs);
+    }
+
+    None
+}
+
+fn match_semantic_navigation(tokens: &[String]) -> Option<CandidateSuggestion> {
+    if tokens.is_empty() || tokens.len() > 3 {
+        return None;
+    }
+    for t in tokens {
+        match t.as_str() {
+            "downloads" | "download" => return Some(sug("cd ~/Downloads", "Navigate to user Downloads folder", 0.99, RiskLevel::Low, None, "Shell")),
+            "documents" | "doc" | "docs" => return Some(sug("cd ~/Documents", "Navigate to user Documents folder", 0.99, RiskLevel::Low, None, "Shell")),
+            "pictures" | "pics" | "photos" => return Some(sug("cd ~/Pictures", "Navigate to user Pictures folder", 0.99, RiskLevel::Low, None, "Shell")),
+            "config" => return Some(sug("cd ~/.config", "Navigate to user XDG configuration folder", 0.99, RiskLevel::Low, None, "Shell")),
+            "projects" | "dev" => return Some(sug("cd ~/Projects", "Navigate to user Projects directory", 0.99, RiskLevel::Low, None, "Shell")),
+            "desktop" => return Some(sug("cd ~/Desktop", "Navigate to user Desktop folder", 0.99, RiskLevel::Low, None, "Shell")),
+            _ => {}
+        }
+    }
+    None
 }
 
 // -----------------------------------------------------------------------------
@@ -567,14 +1009,14 @@ fn match_package_management(lower: &str, ctx: &SystemContext) -> Option<Vec<Cand
     }
 
     // Install intent
-    if let Some(pkg) = parse_install_intent(lower) {
+    if let Some(pkg) = parse_install_intent_str(lower) {
         let (cmd, desc, cat) = resolve_package_command(&pkg, ctx);
         sugs.push(sug(&cmd, &desc, 0.98, RiskLevel::Low, None, &cat));
         return Some(sugs);
     }
 
     // Search intent
-    if let Some(pkg) = parse_find_package_intent(lower) {
+    if let Some(pkg) = parse_find_package_intent_str(lower) {
         sugs.push(sug(&pm.search_cmd(&pkg), &format!("Search {} repositories for '{}'", pm.name(), pkg), 0.98, RiskLevel::Low, None, "Packages"));
         return Some(sugs);
     }
@@ -936,7 +1378,7 @@ fn match_network_and_ports(lower: &str) -> Option<Vec<CandidateSuggestion>> {
     }
 
     // Port lookup
-    if let Some(port) = parse_port_intent(lower) {
+    if let Some(port) = parse_port_intent_str(lower) {
         sugs.push(sug(&format!("ss -ltnp | grep ':{}'", port), &format!("Find listening process bound to TCP port {}", port), 0.98, RiskLevel::Low, None, "Network"));
         sugs.push(sug(&format!("fuser {}/tcp", port), &format!("List process ID occupying TCP port {}", port), 0.92, RiskLevel::Low, None, "Network"));
         return Some(sugs);
@@ -1282,62 +1724,118 @@ fn match_btrfs_and_cachyos(lower: &str) -> Option<Vec<CandidateSuggestion>> {
 // -----------------------------------------------------------------------------
 // Helper parsers & universal lookups
 // -----------------------------------------------------------------------------
-fn parse_install_intent(lower: &str) -> Option<String> {
-    let tokens: Vec<&str> = lower.split_whitespace().collect();
+fn parse_install_intent(tokens: &[String]) -> Option<String> {
     if tokens.is_empty() {
         return None;
     }
 
-    let first = tokens[0];
-    let is_install_action = first == "install"
-        || first == "instal"
-        || first == "isntall"
-        || first == "instll"
-        || first == "intall"
-        || first == "get"
-        || first == "add"
-        || first == "download"
-        || first == "fetch"
-        || matches_fuzzy(first, "install", 0.78);
+    let install_idx = tokens.iter().position(|t| {
+        classify_action_token(t) == Some(ActionVerb::Install)
+    })?;
 
-    if !is_install_action || tokens.len() < 2 {
+    let pkg_tokens: Vec<&str> = tokens
+        .iter()
+        .enumerate()
+        .filter(|(idx, _)| *idx != install_idx)
+        .map(|(_, t)| t.as_str())
+        .filter(|t| !["aur", "package", "packages", "app", "application", "tool", "via"].contains(t))
+        .collect();
+
+    if pkg_tokens.is_empty() {
         return None;
-    }
-
-    let mut pkg_tokens = &tokens[1..];
-    if pkg_tokens.first() == Some(&"aur") && pkg_tokens.len() > 1 {
-        pkg_tokens = &pkg_tokens[1..];
-    }
-    if pkg_tokens.first() == Some(&"package") && pkg_tokens.len() > 1 {
-        pkg_tokens = &pkg_tokens[1..];
     }
 
     Some(pkg_tokens.join(" "))
 }
 
-fn parse_find_package_intent(lower: &str) -> Option<String> {
-    let tokens: Vec<&str> = lower.split_whitespace().collect();
+fn parse_install_intent_str(lower: &str) -> Option<String> {
+    let (_, tokens) = clean_intent(lower);
+    parse_install_intent(&tokens)
+}
+
+fn parse_remove_intent(tokens: &[String]) -> Option<String> {
     if tokens.is_empty() {
         return None;
     }
 
-    let first = tokens[0];
-    let is_find_action = first == "find"
-        || first == "search"
-        || first == "lookup"
-        || first == "locate"
-        || matches_fuzzy(first, "search", 0.78);
+    let remove_idx = tokens.iter().position(|t| {
+        classify_action_token(t) == Some(ActionVerb::Remove)
+    })?;
 
-    if !is_find_action || tokens.len() < 2 {
+    let pkg_tokens: Vec<&str> = tokens
+        .iter()
+        .enumerate()
+        .filter(|(idx, _)| *idx != remove_idx)
+        .map(|(_, t)| t.as_str())
+        .filter(|t| !["package", "packages", "app", "application", "tool", "orphans", "orphan", "cache"].contains(t))
+        .collect();
+
+    if pkg_tokens.is_empty() {
         return None;
     }
 
-    let mut pkg_tokens = &tokens[1..];
-    if pkg_tokens.first() == Some(&"package") && pkg_tokens.len() > 1 {
-        pkg_tokens = &pkg_tokens[1..];
+    Some(pkg_tokens.join(" "))
+}
+
+#[allow(dead_code)]
+fn parse_remove_intent_str(lower: &str) -> Option<String> {
+    let (_, tokens) = clean_intent(lower);
+    parse_remove_intent(&tokens)
+}
+
+fn parse_find_package_intent(tokens: &[String]) -> Option<String> {
+    if tokens.is_empty() {
+        return None;
+    }
+
+    let find_idx = tokens.iter().position(|t| {
+        let l = t.as_str();
+        l == "search" || l == "find" || l == "lookup" || l == "locate"
+    })?;
+
+    let pkg_tokens: Vec<&str> = tokens
+        .iter()
+        .enumerate()
+        .filter(|(idx, _)| *idx != find_idx)
+        .map(|(_, t)| t.as_str())
+        .filter(|t| !["package", "packages", "app", "repo", "for"].contains(t))
+        .collect();
+
+    if pkg_tokens.is_empty() {
+        return None;
     }
 
     Some(pkg_tokens.join(" "))
+}
+
+fn parse_find_package_intent_str(lower: &str) -> Option<String> {
+    let (_, tokens) = clean_intent(lower);
+    parse_find_package_intent(&tokens)
+}
+
+fn parse_port_intent(cleaned: &str, tokens: &[String]) -> Option<(String, bool)> {
+    let has_port_hint = cleaned.contains("port") || cleaned.contains("prt") || cleaned.contains("listen")
+        || cleaned.contains("kill") || cleaned.contains("using") || cleaned.contains("stop");
+
+    let re = Regex::new(r#"\b([1-9]\d{1,4})\b"#).ok()?;
+    let caps = re.captures(cleaned)?;
+    let port_str = caps.get(1)?.as_str();
+    let port_num = port_str.parse::<u32>().ok()?;
+
+    if port_num > 0 && port_num <= 65535 {
+        if has_port_hint || tokens.len() <= 2 {
+            let is_kill = tokens.iter().any(|t| {
+                matches!(classify_action_token(t), Some(ActionVerb::Kill | ActionVerb::Remove))
+            });
+            return Some((port_str.to_string(), is_kill));
+        }
+    }
+    None
+}
+
+fn parse_port_intent_str(lower: &str) -> Option<String> {
+    let (cleaned, tokens) = clean_intent(lower);
+    parse_port_intent(&cleaned, &tokens).map(|(p, _)| p)
 }
 
 // Universal package cross-distro mapping
@@ -1354,8 +1852,10 @@ const UNIVERSAL_PACKAGES: &[UniversalPackage] = &[
     // Browsers
     UniversalPackage { key: "chrome", arch_pkg: "google-chrome", debian_pkg: "google-chrome-stable", fedora_pkg: "google-chrome-stable", desc: "Google Chrome web browser", is_aur: true },
     UniversalPackage { key: "google chrome", arch_pkg: "google-chrome", debian_pkg: "google-chrome-stable", fedora_pkg: "google-chrome-stable", desc: "Google Chrome web browser", is_aur: true },
+    UniversalPackage { key: "chorme", arch_pkg: "google-chrome", debian_pkg: "google-chrome-stable", fedora_pkg: "google-chrome-stable", desc: "Google Chrome web browser", is_aur: true },
     UniversalPackage { key: "chromium", arch_pkg: "chromium", debian_pkg: "chromium-browser", fedora_pkg: "chromium", desc: "Chromium open-source web browser", is_aur: false },
     UniversalPackage { key: "firefox", arch_pkg: "firefox", debian_pkg: "firefox", fedora_pkg: "firefox", desc: "Mozilla Firefox web browser", is_aur: false },
+    UniversalPackage { key: "firfox", arch_pkg: "firefox", debian_pkg: "firefox", fedora_pkg: "firefox", desc: "Mozilla Firefox web browser", is_aur: false },
     UniversalPackage { key: "brave", arch_pkg: "brave-bin", debian_pkg: "brave-browser", fedora_pkg: "brave-browser", desc: "Brave privacy web browser", is_aur: true },
     UniversalPackage { key: "brave browser", arch_pkg: "brave-bin", debian_pkg: "brave-browser", fedora_pkg: "brave-browser", desc: "Brave privacy web browser", is_aur: true },
     UniversalPackage { key: "zen", arch_pkg: "zen-browser-bin", debian_pkg: "flatpak install flathub io.github.zen_browser.zen", fedora_pkg: "flatpak install flathub io.github.zen_browser.zen", desc: "Zen modern privacy browser", is_aur: true },
@@ -1363,6 +1863,7 @@ const UNIVERSAL_PACKAGES: &[UniversalPackage] = &[
     // Development & IDEs
     UniversalPackage { key: "vscode", arch_pkg: "code", debian_pkg: "code", fedora_pkg: "code", desc: "Visual Studio Code editor", is_aur: false },
     UniversalPackage { key: "code", arch_pkg: "code", debian_pkg: "code", fedora_pkg: "code", desc: "Visual Studio Code editor", is_aur: false },
+    UniversalPackage { key: "vscod", arch_pkg: "code", debian_pkg: "code", fedora_pkg: "code", desc: "Visual Studio Code editor", is_aur: false },
     UniversalPackage { key: "visual studio code", arch_pkg: "visual-studio-code-bin", debian_pkg: "code", fedora_pkg: "code", desc: "Visual Studio Code proprietary binary", is_aur: true },
     UniversalPackage { key: "vscodium", arch_pkg: "vscodium-bin", debian_pkg: "codium", fedora_pkg: "codium", desc: "VSCodium telemetry-free VS Code", is_aur: true },
     UniversalPackage { key: "zed", arch_pkg: "zed", debian_pkg: "flatpak install flathub dev.zed.Zed", fedora_pkg: "zed", desc: "Zed high-performance code editor", is_aur: false },
@@ -1397,6 +1898,7 @@ const UNIVERSAL_PACKAGES: &[UniversalPackage] = &[
     UniversalPackage { key: "lutris", arch_pkg: "lutris", debian_pkg: "lutris", fedora_pkg: "lutris", desc: "Open gaming platform for Linux", is_aur: false },
     UniversalPackage { key: "spotify", arch_pkg: "spotify", debian_pkg: "flatpak install flathub com.spotify.Client", fedora_pkg: "flatpak install flathub com.spotify.Client", desc: "Spotify music streaming client", is_aur: true },
     UniversalPackage { key: "discord", arch_pkg: "discord", debian_pkg: "discord", fedora_pkg: "discord", desc: "Discord voice and text communication client", is_aur: false },
+    UniversalPackage { key: "dicsord", arch_pkg: "discord", debian_pkg: "discord", fedora_pkg: "discord", desc: "Discord voice and text communication client", is_aur: false },
     UniversalPackage { key: "vlc", arch_pkg: "vlc", debian_pkg: "vlc", fedora_pkg: "vlc", desc: "VLC multimedia player framework", is_aur: false },
     UniversalPackage { key: "mpv", arch_pkg: "mpv", debian_pkg: "mpv", fedora_pkg: "mpv", desc: "Lightweight command-line video player", is_aur: false },
     UniversalPackage { key: "obs", arch_pkg: "obs-studio", debian_pkg: "obs-studio", fedora_pkg: "obs-studio", desc: "OBS Studio recording and streaming", is_aur: false },
@@ -1413,7 +1915,7 @@ const UNIVERSAL_PACKAGES: &[UniversalPackage] = &[
 ];
 
 fn resolve_package_command(pkg: &str, ctx: &SystemContext) -> (String, String, String) {
-    let lower_pkg = pkg.to_lowercase();
+    let lower_pkg = pkg.to_lowercase().trim().to_string();
     let pm = ctx.pkg_manager;
 
     // 1. Exact match in catalog
@@ -1423,19 +1925,36 @@ fn resolve_package_command(pkg: &str, ctx: &SystemContext) -> (String, String, S
         }
     }
 
-    // 2. Fuzzy match in catalog
+    // 2. Token containment (e.g. user typed "google chrome" or "chrome browser")
+    for entry in UNIVERSAL_PACKAGES {
+        if lower_pkg.contains(entry.key) || entry.key.contains(&lower_pkg) {
+            return format_package_install(entry, ctx);
+        }
+    }
+
+    // 3. Fuzzy match entire string in catalog
     let keys: Vec<&str> = UNIVERSAL_PACKAGES.iter().map(|p| p.key).collect();
-    if let Some((best_key, score)) = fuzzy_find_best(&lower_pkg, &keys, 0.72) {
+    if let Some((best_key, score)) = fuzzy_find_best(&lower_pkg, &keys, 0.68) {
         if let Some(entry) = UNIVERSAL_PACKAGES.iter().find(|p| p.key == best_key) {
             let (cmd, desc, cat) = format_package_install(entry, ctx);
             return (cmd, format!("{} (fuzzy match {:.0}%)", desc, score * 100.0), cat);
         }
     }
 
-    // 3. Fallback to host distro's native package manager install command
+    // 4. Try fuzzy match for individual words inside lower_pkg
+    for word in lower_pkg.split_whitespace() {
+        if let Some((best_key, score)) = fuzzy_find_best(word, &keys, 0.70) {
+            if let Some(entry) = UNIVERSAL_PACKAGES.iter().find(|p| p.key == best_key) {
+                let (cmd, desc, cat) = format_package_install(entry, ctx);
+                return (cmd, format!("{} (fuzzy match {:.0}%)", desc, score * 100.0), cat);
+            }
+        }
+    }
+
+    // 5. Fallback to host distro's native package manager install command
     (
-        pm.install_cmd(pkg),
-        format!("Install '{}' via {}", pkg, pm.name()),
+        pm.install_cmd(&lower_pkg),
+        format!("Install '{}' via {}", lower_pkg, pm.name()),
         pm.name().to_string(),
     )
 }
@@ -1469,15 +1988,6 @@ fn format_package_install(entry: &UniversalPackage, ctx: &SystemContext) -> (Str
             (ctx.pkg_manager.install_cmd(entry.arch_pkg), format!("Install {} ({})", entry.desc, ctx.pkg_manager.name()), ctx.pkg_manager.name().to_string())
         }
     }
-}
-
-fn parse_port_intent(lower: &str) -> Option<String> {
-    if !lower.contains("port") && !lower.contains("prt") && !lower.contains("listen") {
-        return None;
-    }
-    let re = Regex::new(r#"\b(\d{1,5})\b"#).ok()?;
-    let caps = re.captures(lower)?;
-    Some(caps.get(1)?.as_str().to_string())
 }
 
 fn match_archive_extraction(lower: &str, ctx: &SystemContext) -> Option<CandidateSuggestion> {
