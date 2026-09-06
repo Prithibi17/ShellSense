@@ -29,7 +29,7 @@ impl Default for GeneralConfig {
     fn default() -> Self {
         Self {
             shell: "fish".to_string(),
-            ai_enabled: true,
+            ai_enabled: false,
             max_suggestions: 3,
             debounce_ms: 300,
             deterministic_first: true,

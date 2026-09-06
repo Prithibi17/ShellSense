@@ -5,8 +5,8 @@
 # Preferred shell environment
 shell = "fish"
 
-# Enable or disable AI intent engine
-ai_enabled = true
+# Enable or disable AI intent engine (false = pure native deterministic mode)
+ai_enabled = false
 
 # Maximum number of suggestion candidates to return (1-5)
 max_suggestions = 3
