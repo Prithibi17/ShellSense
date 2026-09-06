@@ -1,8 +1,8 @@
+use shellsense::context::{sanitize_text, SystemContext};
+use shellsense::deterministic::match_deterministic;
+use shellsense::protocol::RiskLevel;
+use shellsense::safety::{check_safety, correct_distro_command};
 use std::path::PathBuf;
-use terminal_assistant::context::{sanitize_text, SystemContext};
-use terminal_assistant::deterministic::match_deterministic;
-use terminal_assistant::protocol::RiskLevel;
-use terminal_assistant::safety::{check_safety, correct_distro_command};
 
 fn make_context(files: Vec<&str>, is_git: bool) -> SystemContext {
     SystemContext {
@@ -117,7 +117,7 @@ fn test_git_heuristics() {
 
 #[test]
 fn test_universal_distro_adaptation() {
-    use terminal_assistant::context::{DistroFamily, PackageManager};
+    use shellsense::context::{DistroFamily, PackageManager};
 
     // 1. Ubuntu / Debian context
     let mut ctx_ubuntu = make_context(vec![], false);
@@ -165,7 +165,7 @@ fn test_universal_distro_adaptation() {
 
 #[test]
 fn test_universal_hardware_adaptation() {
-    use terminal_assistant::context::{AudioSystem, FormFactor, GpuVendor};
+    use shellsense::context::{AudioSystem, FormFactor, GpuVendor};
 
     // 1. AMD Radeon GPU
     let mut ctx_amd = make_context(vec![], false);

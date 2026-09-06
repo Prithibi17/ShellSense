@@ -1,9 +1,9 @@
 [package]
-name = "terminal-assistant"
+name = "shellsense"
 version = "0.1.0"
 edition = "2021"
 authors = ["Prithibi <prithibi@cachyos>"]
-description = "AI-powered terminal command assistant and autocomplete daemon for Linux/CachyOS"
+description = "IntelliSense-like terminal command assistant and autocomplete for Linux"
 license = "MIT"
 
 [dependencies]
@@ -19,13 +19,13 @@ async-trait = "0.1"
 chrono = { version = "0.4", features = ["serde"] }
 
 [[bin]]
-name = "terminal-assistantd"
+name = "shellsensd"
 path = "src/bin/daemon.rs"
 
 [[bin]]
-name = "terminal-assistant"
+name = "shellsense"
 path = "src/bin/cli.rs"
 
 [lib]
-name = "terminal_assistant"
+name = "shellsense"
 path = "src/lib.rs"

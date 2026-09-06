@@ -1,17 +1,17 @@
 use clap::{Parser, Subcommand};
-use std::path::PathBuf;
-use terminal_assistant::config::Config;
-use terminal_assistant::protocol::{
+use shellsense::config::Config;
+use shellsense::protocol::{
     ExplainRequest, ModelsRequest, RecordRequest, Request, Response, StatusRequest,
     SuggestRequest, SuggestTrigger,
 };
-use terminal_assistant::AssistantEngine;
+use shellsense::AssistantEngine;
+use std::path::PathBuf;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
 
 #[derive(Parser)]
-#[command(name = "terminal-assistant")]
-#[command(about = "AI-powered terminal command assistant and autocomplete client")]
+#[command(name = "shellsense")]
+#[command(about = "ShellSense: IntelliSense-like terminal command assistant and autocomplete")]
 #[command(version = "0.1.0")]
 struct Cli {
     #[command(subcommand)]
@@ -149,13 +149,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 } else if raw_all {
                     for item in &sug_resp.suggestions {
                         let cat = item.category.as_deref().unwrap_or("Linux");
-                        let is_dest = if item.risk == terminal_assistant::protocol::RiskLevel::Destructive { "dest" } else { "ok" };
+                        let is_dest = if item.risk == shellsense::protocol::RiskLevel::Destructive { "dest" } else { "ok" };
                         println!("{}\t{}\t{}\t{}", cat, item.command, item.description, is_dest);
                     }
                 } else if ghost {
                     if let Some(first) = sug_resp.suggestions.first() {
                         let cat = first.category.as_deref().unwrap_or("Linux");
-                        let is_dest = if first.risk == terminal_assistant::protocol::RiskLevel::Destructive { "dest" } else { "ok" };
+                        let is_dest = if first.risk == shellsense::protocol::RiskLevel::Destructive { "dest" } else { "ok" };
                         println!("{}\t{}\t{}\t{}", cat, first.command, first.description, is_dest);
                     }
                 } else {
@@ -165,9 +165,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     } else {
                         for (idx, item) in sug_resp.suggestions.iter().enumerate() {
                             let risk_tag = match item.risk {
-                                terminal_assistant::protocol::RiskLevel::Low => "",
-                                terminal_assistant::protocol::RiskLevel::Medium => " [Notice: modifies state]",
-                                terminal_assistant::protocol::RiskLevel::Destructive => " [⚠ Potentially destructive]",
+                                shellsense::protocol::RiskLevel::Low => "",
+                                shellsense::protocol::RiskLevel::Medium => " [Notice: modifies state]",
+                                shellsense::protocol::RiskLevel::Destructive => " [⚠ Potentially destructive]",
                             };
                             println!("{}. {}{}", idx + 1, item.command, risk_tag);
                             println!("   {} (conf: {:.0}%, src: {})", item.description, item.confidence * 100.0, item.source);
@@ -239,7 +239,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     if json {
                         println!("{}", serde_json::to_string_pretty(&s_resp)?);
                     } else {
-                        println!("Terminal Assistant Daemon: ● Running");
+                        println!("ShellSense Daemon: ● Running");
                         println!("Socket: {}", s_resp.socket_path);
                         println!("Uptime: {}s", s_resp.uptime_secs);
                         println!("AI Available: {}", if s_resp.ai_available { "Yes" } else { "No (Ollama stopped or no models)" });
@@ -251,7 +251,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     if json {
                         println!("{{\"running\": false}}");
                     } else {
-                        println!("Terminal Assistant Daemon: ○ Stopped");
+                        println!("ShellSense Daemon: ○ Stopped");
                         println!("Socket: {}", socket_path.display());
                         println!("Note: Commands will still use local deterministic engine fallback.");
                     }

@@ -117,9 +117,20 @@ impl Default for Config {
 
 impl Config {
     pub fn config_dir() -> PathBuf {
-        dirs::config_dir()
+        let new_dir = dirs::config_dir()
             .unwrap_or_else(|| PathBuf::from("/home/prithibi/.config"))
-            .join("terminal-assistant")
+            .join("shellsense");
+        if new_dir.exists() {
+            return new_dir;
+        }
+        // Check if legacy config exists
+        let legacy = dirs::config_dir()
+            .unwrap_or_else(|| PathBuf::from("/home/prithibi/.config"))
+            .join("terminal-assistant");
+        if legacy.exists() {
+            return legacy;
+        }
+        new_dir
     }
 
     pub fn config_file() -> PathBuf {
@@ -129,15 +140,15 @@ impl Config {
     pub fn data_dir() -> PathBuf {
         dirs::data_local_dir()
             .unwrap_or_else(|| PathBuf::from("/home/prithibi/.local/share"))
-            .join("terminal-assistant")
+            .join("shellsense")
     }
 
     pub fn socket_path() -> PathBuf {
         if let Ok(runtime_dir) = std::env::var("XDG_RUNTIME_DIR") {
-            PathBuf::from(runtime_dir).join("terminal-assistant.sock")
+            PathBuf::from(runtime_dir).join("shellsense.sock")
         } else {
             let uid = libc_getuid_or_default();
-            PathBuf::from(format!("/tmp/terminal-assistant-{}.sock", uid))
+            PathBuf::from(format!("/tmp/shellsense-{}.sock", uid))
         }
     }
 

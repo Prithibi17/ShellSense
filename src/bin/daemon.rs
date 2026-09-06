@@ -1,9 +1,9 @@
+use shellsense::config::Config;
+use shellsense::protocol::{Request, Response};
+use shellsense::AssistantEngine;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::sync::Arc;
-use terminal_assistant::config::Config;
-use terminal_assistant::protocol::{Request, Response};
-use terminal_assistant::AssistantEngine;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{UnixListener, UnixStream};
 
@@ -12,14 +12,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let config = Config::load_or_default();
     let socket_path = Config::socket_path();
 
-    println!("Starting terminal-assistantd v0.1.0...");
+    println!("Starting shellsensd v0.1.0...");
     println!("Socket: {}", socket_path.display());
     println!("AI Provider: {} ({})", config.ai.provider, config.ai.endpoint);
 
     // Clean up stale socket if present
     if socket_path.exists() {
         if let Ok(_) = UnixStream::connect(&socket_path).await {
-            eprintln!("Error: Another instance of terminal-assistantd is already running on {}", socket_path.display());
+            eprintln!("Error: Another instance of shellsensd is already running on {}", socket_path.display());
             std::process::exit(1);
         } else {
             let _ = fs::remove_file(&socket_path);
@@ -40,12 +40,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cleanup_path = socket_path.clone();
     tokio::spawn(async move {
         tokio::signal::ctrl_c().await.ok();
-        println!("\nShutting down terminal-assistantd...");
+        println!("\nShutting down shellsensd...");
         let _ = fs::remove_file(cleanup_path);
         std::process::exit(0);
     });
 
-    println!("terminal-assistantd is ready. Listening for client requests.");
+    println!("shellsensd is ready. Listening for client requests.");
 
     loop {
         match listener.accept().await {
